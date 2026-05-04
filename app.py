@@ -1097,16 +1097,11 @@ def ayarlar():
     
     if request.method == 'POST':
         if 'test_sms' in request.form:
-            phone = current_user.phone_number
-            apikey = current_user.whatsapp_apikey
-            if phone and apikey:
-                res = notifier.send_whatsapp(phone, "Test başarılı! Fatura Takip sistemi artık WhatsApp üzerinden çalışıyor.", apikey)
-                if res:
-                    flash("Test bildirimi arka planda gönderilmeye başlandı.", "success")
-                else:
-                    flash("Bildirim başlatılamadı.", "danger")
-            else:
-                flash("Lütfen önce telefon numaranızı ve WhatsApp API Key'inizi kaydedin.", "danger")
+            try:
+                notifier.notify_all("Test başarılı! Fatura Takip sistemi artık WhatsApp üzerinden çalışıyor.")
+                flash("Test bildirimi arka planda tüm kullanıcılara gönderilmeye başlandı.", "success")
+            except Exception as e:
+                flash(f"Bildirim başlatılamadı: {e}", "danger")
         else:
             phone = request.form.get('phone')
             whatsapp_apikey = request.form.get('whatsapp_apikey', '')
