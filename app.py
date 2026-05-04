@@ -22,6 +22,19 @@ app.secret_key = 'super-secret-key-change-this'
 # Initialize DB
 database.init_db()
 
+# Insert default categories if none exist
+_conn = database.get_db_connection()
+_row = _conn.execute("SELECT COUNT(*) FROM categories").fetchone()
+_cnt = list(_row.values())[0] if isinstance(_row, dict) else _row[0]
+if _cnt == 0:
+    for _cat in ['Elektrik', 'Su', 'Doğalgaz', 'İnternet', 'Telefon', 'Kira', 'Diğer']:
+        try:
+            _conn.execute("INSERT INTO categories (name) VALUES (?)", (_cat,))
+        except Exception:
+            pass
+    _conn.commit()
+_conn.close()
+
 # Initialize Scheduler
 start_scheduler()
 
@@ -404,20 +417,24 @@ def faturalar():
             conn.execute("UPDATE bills SET active = 0 WHERE id = ?", (request.form.get('delete_id'),))
             flash("Fatura silindi.", "success")
         else:
-            name = request.form.get('name')
-            amount = float(request.form.get('amount') or 0)
-            due_day = int(request.form.get('due_day'))
-            last_payment_day = int(request.form.get('last_payment_day'))
-            category = request.form.get('category')
+            name = request.form.get('name', '').strip()
+            amount_raw = request.form.get('amount') or '0'
+            due_day = int(request.form.get('due_day') or 1)
+            last_payment_day = int(request.form.get('last_payment_day') or 1)
+            category = request.form.get('category') or 'Diğer'
             subscriber_no = request.form.get('subscriber_no', '')
             is_recurring = 1 if request.form.get('is_recurring') == 'on' else 0
             is_autopay = 1 if request.form.get('is_autopay') == 'on' else 0
 
-            conn.execute('''
-                INSERT INTO bills (name, owner, amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (name, "Ortak", amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no))
-            flash("Fatura başarıyla eklendi.", "success")
+            if not name:
+                flash("Fatura adı boş olamaz.", "danger")
+            else:
+                amount = float(amount_raw)
+                conn.execute('''
+                    INSERT INTO bills (name, owner, amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (name, "Ortak", amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no))
+                flash("Fatura başarıyla eklendi.", "success")
         conn.commit()
         return redirect(url_for('faturalar'))
         
@@ -592,8 +609,16 @@ def odeme_kaydet():
         payment_date = request.form.get('payment_date')
         notes = request.form.get('notes', '')
         
-        payer = dict(conn.execute("SELECT * FROM users WHERE display_name = ?", (paid_by_display,)).fetchone())
-        bill = dict(conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone())
+        payer_row = conn.execute("SELECT * FROM users WHERE display_name = ?", (paid_by_display,)).fetchone()
+        bill_row  = conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone()
+
+        if not payer_row or not bill_row:
+            conn.close()
+            flash("Hata: Kullanıcı veya fatura bulunamadı.", "danger")
+            return redirect(url_for('odeme_kaydet'))
+
+        payer = dict(payer_row)
+        bill  = dict(bill_row)
         
         cursor = conn.cursor()
         cursor.execute('''
@@ -1120,9 +1145,26 @@ def ayarlar():
     {% endblock %}
     """)
 
+@app.errorhandler(500)
+def internal_error(e):
+    import traceback
+    err = traceback.format_exc()
+    print(f"[500 HATA]:\n{err}")
+    return f"""
+    <div style='font-family:monospace;padding:20px;background:#fff3cd;border:2px solid #ffc107;border-radius:8px;margin:20px;'>
+        <h2>⚠️ Geçici Bir Sorun Oluştu</h2>
+        <p>Lütfen bu hatayı Fahri'ye iletin:</p>
+        <pre style='background:#f8f9fa;padding:10px;border-radius:6px;overflow:auto;'>{err}</pre>
+        <a href='/' style='background:#6366f1;color:white;padding:10px 20px;border-radius:8px;text-decoration:none;'>Ana Sayfaya Dön</a>
+    </div>
+    """, 500
+
 @app.route('/cron')
 def cron_job():
-    check_bills_and_notify()
+    try:
+        check_bills_and_notify()
+    except Exception as e:
+        print(f"[Cron Hata]: {e}")
     return "Cron run successfully", 200
 
 if __name__ == "__main__":
