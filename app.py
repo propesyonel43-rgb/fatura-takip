@@ -48,6 +48,7 @@ class User(UserMixin):
         self.username = user_data["username"]
         self.display_name = user_data["display_name"]
         self.phone_number = user_data.get("phone_number")
+        self.whatsapp_apikey = user_data.get("whatsapp_apikey", "")
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -1095,18 +1096,22 @@ def ayarlar():
     if request.method == 'POST':
         if 'test_sms' in request.form:
             phone = current_user.phone_number
-            if phone:
-                res = notifier.send_sms(phone, "Test SMS başarılı! Fatura Takip sistemi çalışıyor.")
+            apikey = current_user.whatsapp_apikey
+            if phone and apikey:
+                res = notifier.send_whatsapp(phone, "Test başarılı! Fatura Takip sistemi artık WhatsApp üzerinden çalışıyor.", apikey)
                 if res:
-                    flash("Test SMS başarıyla gönderildi.", "success")
+                    flash("Test bildirimi arka planda gönderilmeye başlandı.", "success")
                 else:
-                    flash("SMS gönderilemedi. API bilgilerini kontrol edin.", "danger")
+                    flash("Bildirim başlatılamadı.", "danger")
+            else:
+                flash("Lütfen önce telefon numaranızı ve WhatsApp API Key'inizi kaydedin.", "danger")
         else:
             phone = request.form.get('phone')
+            whatsapp_apikey = request.form.get('whatsapp_apikey', '')
             password = request.form.get('password')
             
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET phone_number = ? WHERE id = ?", (phone, current_user.id))
+            cursor.execute("UPDATE users SET phone_number = ?, whatsapp_apikey = ? WHERE id = ?", (phone, whatsapp_apikey, current_user.id))
             if password:
                 cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(password, method='pbkdf2:sha256'), current_user.id))
                 
@@ -1129,6 +1134,11 @@ def ayarlar():
             <label class="form-label text-secondary fw-bold">Telefon Numarası</label>
             <input type="text" name="phone" class="form-control form-control-lg" value="{{ current_user.phone_number }}" placeholder="Örn: 5551234567">
         </div>
+        <div class="mb-3">
+            <label class="form-label text-secondary fw-bold">WhatsApp API Key (CallMeBot)</label>
+            <input type="text" name="whatsapp_apikey" class="form-control form-control-lg" value="{{ current_user.whatsapp_apikey }}" placeholder="Örn: 123456">
+            <div class="form-text mt-1 text-muted">WhatsApp bildirimleri almak için numaradan aldığınız şifre.</div>
+        </div>
         <div class="mb-4">
             <label class="form-label text-secondary fw-bold">Yeni Şifre</label>
             <input type="password" name="password" class="form-control form-control-lg" placeholder="Sadece değiştirmek istiyorsanız doldurun">
@@ -1138,9 +1148,9 @@ def ayarlar():
     
     <form method="POST" class="card p-4 shadow-sm border-0 bg-light">
         <h5 class="mb-3 text-secondary fw-bold">Bağlantı Testi</h5>
-        <p class="text-muted small">Bu butona basarak sms-gate.app üzerinden telefonunuza SMS gönderip gönderemediğini test edebilirsiniz.</p>
+        <p class="text-muted small">Bu butona basarak CallMeBot üzerinden WhatsApp'ınıza mesaj gönderip gönderemediğini test edebilirsiniz.</p>
         <input type="hidden" name="test_sms" value="1">
-        <button type="submit" class="btn btn-outline-success btn-lg w-100 py-3 fw-bold">Sistemi Test Et (SMS Gönder)</button>
+        <button type="submit" class="btn btn-outline-success btn-lg w-100 py-3 fw-bold">Sistemi Test Et (WhatsApp Gönder)</button>
     </form>
     {% endblock %}
     """)
