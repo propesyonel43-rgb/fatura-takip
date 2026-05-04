@@ -1,7 +1,0 @@
-flask
-flask-login
-apscheduler
-requests
-werkzeug
-gunicorn
-psycopg2-binary
