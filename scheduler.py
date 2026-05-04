@@ -10,9 +10,13 @@ NOTIFICATION_SLOTS = [10, 15, 21]  # Saat 10:00, 15:00, 21:00 TR saatiyle
 
 def check_bills_and_notify():
     now = datetime.now(TURKEY_TZ)
-    today_str = now.strftime('%Y-%m-%d')
     current_slot = now.hour  # Hangi saatte çağrıldıysa o slot
-
+    
+    # Sadece belirlenen saatlerde (10, 15, 21) çalış.
+    if current_slot not in NOTIFICATION_SLOTS:
+        return
+        
+    today_str = now.strftime('%Y-%m-%d')
     conn = database.get_db_connection()
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
 
