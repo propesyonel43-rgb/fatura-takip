@@ -409,6 +409,98 @@ def dashboard():
     {% endblock %}
     """, metin_debt=metin_debt, dashboard_bills=dashboard_bills, payments=payments)
 
+@app.route('/fatura_duzenle/<int:bill_id>', methods=['GET', 'POST'])
+@login_required
+def fatura_duzenle(bill_id):
+    conn = database.get_db_connection()
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        amount_raw = request.form.get('amount') or '0'
+        due_day = int(request.form.get('due_day') or 1)
+        last_payment_day = int(request.form.get('last_payment_day') or 1)
+        category = request.form.get('category') or 'Diğer'
+        subscriber_no = request.form.get('subscriber_no', '')
+        is_recurring = 1 if request.form.get('is_recurring') == 'on' else 0
+        is_autopay = 1 if request.form.get('is_autopay') == 'on' else 0
+        
+        if name:
+            conn.execute('''
+                UPDATE bills 
+                SET name=?, amount=?, due_day=?, last_payment_day=?, category=?, 
+                    is_recurring=?, is_autopay=?, subscriber_no=?
+                WHERE id=?
+            ''', (name, float(amount_raw), due_day, last_payment_day, category, 
+                  is_recurring, is_autopay, subscriber_no, bill_id))
+            conn.commit()
+            flash("Fatura başarıyla güncellendi.", "success")
+        else:
+            flash("Fatura adı boş olamaz.", "danger")
+        conn.close()
+        return redirect(url_for('faturalar'))
+        
+    bill = conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone()
+    categories = conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
+    conn.close()
+    
+    if not bill:
+        flash("Fatura bulunamadı.", "danger")
+        return redirect(url_for('faturalar'))
+        
+    return render_template_string("""{% extends 'base.html' %}
+    {% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h3>Fatura Düzenle</h3>
+        <a href="{{ url_for('faturalar') }}" class="btn btn-outline-secondary">İptal</a>
+    </div>
+    <form method="POST" class="card p-4 shadow-sm border-0 mb-4">
+        <div class="mb-3">
+            <label class="form-label text-secondary fw-bold">Fatura Adı</label>
+            <input type="text" name="name" class="form-control form-control-lg" value="{{ bill.name }}" required>
+        </div>
+        <div class="mb-3">
+            <label class="form-label text-secondary fw-bold">Abone / Müşteri Numarası</label>
+            <input type="text" name="subscriber_no" class="form-control" value="{{ bill.subscriber_no }}">
+        </div>
+        <div class="mb-3">
+            <label class="form-label text-secondary fw-bold">Tutar (Opsiyonel Sabit Tutar)</label>
+            <input type="number" step="0.01" name="amount" class="form-control form-control-lg" value="{{ bill.amount }}">
+        </div>
+        
+        <div class="row g-2 mb-3">
+            <div class="col-6">
+                <label class="form-label text-secondary fw-bold">Normal Ödeme Günü</label>
+                <input type="number" name="due_day" class="form-control" min="1" max="31" value="{{ bill.due_day }}" required>
+            </div>
+            <div class="col-6">
+                <label class="form-label text-secondary fw-bold">Son Ödeme Günü</label>
+                <input type="number" name="last_payment_day" class="form-control" min="1" max="31" value="{{ bill.last_payment_day }}" required>
+            </div>
+        </div>
+        
+        <div class="mb-3">
+            <label class="form-label text-secondary fw-bold">Kategori</label>
+            <select name="category" class="form-select">
+                {% for c in categories %}
+                <option value="{{ c.name }}" {% if c.name == bill.category %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="d-flex justify-content-between mb-4 mt-2">
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="is_recurring" id="rec2" {% if bill.is_recurring %}checked{% endif %}>
+                <label class="form-check-label fw-bold" for="rec2">Her Ay Tekrarla</label>
+            </div>
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="is_autopay" id="auto2" {% if bill.is_autopay %}checked{% endif %}>
+                <label class="form-check-label fw-bold" for="auto2">Otomatik Ödeniyor</label>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg w-100 py-3 fw-bold">Güncelle</button>
+    </form>
+    {% endblock %}
+    """, bill=bill, categories=categories)
+
 @app.route('/faturalar', methods=['GET', 'POST'])
 @login_required
 def faturalar():
@@ -465,10 +557,13 @@ def faturalar():
                     {% if b.is_recurring %}<span class="badge bg-light text-muted">Tekrarlı</span>{% endif %}
                 </div>
             </div>
-            <form method="POST" class="d-inline" onsubmit="return confirm('Bu faturasını silmek istediğinize emin misiniz?');">
-                <input type="hidden" name="delete_id" value="{{ b.id }}">
-                <button class="btn btn-sm" style="background:#fee2e2;color:#991b1b;border:none;border-radius:8px;">Sil</button>
-            </form>
+            <div class="d-inline-flex gap-2">
+                <a href="{{ url_for('fatura_duzenle', bill_id=b.id) }}" class="btn btn-sm" style="background:#e0f2fe;color:#0369a1;border:none;border-radius:8px;padding:4px 10px;">Düzenle</a>
+                <form method="POST" onsubmit="return confirm('Bu faturasını silmek istediğinize emin misiniz?');" style="margin:0;">
+                    <input type="hidden" name="delete_id" value="{{ b.id }}">
+                    <button class="btn btn-sm" style="background:#fee2e2;color:#991b1b;border:none;border-radius:8px;padding:4px 10px;">Sil</button>
+                </form>
+            </div>
         </div>
         <div class="d-flex justify-content-between align-items-end mt-3" style="background:#f8fafc;border-radius:10px;padding:10px 12px;">
             <div class="small">
