@@ -36,8 +36,11 @@ def check_bills_and_notify():
         is_due_day = (bill['due_day'] == now.day)
         days_left = bill['due_day'] - now.day
         is_approaching = (0 < days_left <= 3)
+        
+        is_overdue = (now.day > bill['last_payment_day'])
+        days_overdue = now.day - bill['last_payment_day'] if is_overdue else 0
 
-        if not (is_last_day or is_due_day or is_approaching):
+        if not (is_last_day or is_due_day or is_approaching or is_overdue):
             continue
 
         # Dedup: Bu bill için bugün bu slot'ta mesaj gitti mi?
@@ -52,12 +55,16 @@ def check_bills_and_notify():
         # Mesaj oluştur
         abone = f" (Abone: {bill['subscriber_no']})" if bill.get('subscriber_no') else ""
         if bill['is_autopay']:
-            if is_last_day:
+            if is_overdue:
+                msg = f"🔴 GECİKMİŞ OTO-ÖDEME: {bill['name']}{abone} ({bill['amount']}TL) {days_overdue} gün gecikmede! Hesabı kontrol edin."
+            elif is_last_day:
                 msg = f"ℹ️ BUGÜN OTO-ÖDEME SON GÜN: {bill['name']}{abone} ({bill['amount']}TL) hesaptan çekilecek."
             else:
                 msg = f"ℹ️ YAKLAŞAN OTO-ÖDEME: {bill['name']}{abone} ({bill['amount']}TL) - {days_left} gün kaldı."
         else:
-            if is_last_day:
+            if is_overdue:
+                msg = f"🔴 DİKKAT GECİKMİŞ ÖDEME: {bill['name']}{abone} faturası ({bill['amount']}TL) tam {days_overdue} gün gecikti! Lütfen hemen ödeyin."
+            elif is_last_day:
                 msg = f"⚠️ BUGÜN SON GÜN! {bill['name']}{abone} faturası ({bill['amount']}TL) — LÜTFEN BUGÜN ÖDEYİN!"
             elif is_due_day:
                 msg = f"🔔 ÖDEME GÜNÜ: {bill['name']}{abone} faturası ({bill['amount']}TL) ödeme günü geldi."
