@@ -1,43 +1,40 @@
 import requests
 import database
 import threading
+import urllib.parse
 
-def _send_sms_sync(phone, message):
-    if not phone:
+def _send_whatsapp_sync(phone, message, apikey):
+    if not phone or not apikey:
         return False
+    
     phone = str(phone).strip()
     if phone.startswith('0'):
+        phone = '90' + phone[1:]
+    elif phone.startswith('+'):
         phone = phone[1:]
-    if not phone.startswith('+'):
-        phone = '+90' + phone
-    url = "https://api.sms-gate.app/3rdparty/v1/message"
-    payload = {
-        "message": message,
-        "phoneNumbers": [phone]
-    }
+    elif not phone.startswith('90'):
+        phone = '90' + phone
+
+    encoded_msg = urllib.parse.quote(message)
+    url = f"https://api.callmebot.com/whatsapp.php?phone={phone}&text={encoded_msg}&apikey={apikey}"
+    
     try:
-        response = requests.post(
-            url,
-            json=payload,
-            auth=("VKLS8B", "oerazwrhuki_fr"),
-            timeout=10
-        )
-        if response.status_code not in (200, 201, 202):
-            print(f"SMS API Error: {response.status_code} - {response.text}")
-        return response.status_code in (200, 201, 202)
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"WhatsApp API Error: {response.status_code} - {response.text}")
+        return response.status_code == 200
     except Exception as e:
-        print(f"SMS Error: {e}")
+        print(f"WhatsApp Error: {e}")
         return False
 
-def send_sms(phone, message):
-    # Arka planda çalıştır ki web sitesi donmasın
-    thread = threading.Thread(target=_send_sms_sync, args=(phone, message))
+def send_whatsapp(phone, message, apikey):
+    thread = threading.Thread(target=_send_whatsapp_sync, args=(phone, message, apikey))
     thread.daemon = True
     thread.start()
-    return True # API sonucu beklenmeyeceği için varsayılan True döneriz
+    return True
 
 def notify_all(message):
     users = database.get_all_users()
     for user in users:
-        if user.get("phone_number"):
-            send_sms(user["phone_number"], message)
+        if user.get("phone_number") and user.get("whatsapp_apikey"):
+            send_whatsapp(user["phone_number"], message, user["whatsapp_apikey"])

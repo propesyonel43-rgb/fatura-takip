@@ -53,6 +53,9 @@ class _PGConn:
     def commit(self):
         self._r.commit()
 
+    def rollback(self):
+        self._r.rollback()
+
     def close(self):
         self._r.close()
 
@@ -85,7 +88,8 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     display_name TEXT NOT NULL,
-    phone_number TEXT
+    phone_number TEXT,
+    whatsapp_apikey TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
@@ -159,7 +163,8 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     display_name TEXT NOT NULL,
-    phone_number TEXT
+    phone_number TEXT,
+    whatsapp_apikey TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
@@ -232,7 +237,14 @@ def init_db():
         conn.execute("ALTER TABLE bills ADD COLUMN subscriber_no TEXT DEFAULT ''")
         conn.commit()
     except Exception:
-        pass
+        try: conn.rollback()
+        except: pass
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN whatsapp_apikey TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
     try:
         if DATABASE_URL:
             conn.execute("CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, bill_id INTEGER NOT NULL, log_date TEXT NOT NULL, time_slot INTEGER NOT NULL, UNIQUE(bill_id, log_date, time_slot))")
@@ -240,7 +252,8 @@ def init_db():
             conn.execute("CREATE TABLE IF NOT EXISTS notification_log (id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER NOT NULL, log_date TEXT NOT NULL, time_slot INTEGER NOT NULL, UNIQUE(bill_id, log_date, time_slot))")
         conn.commit()
     except Exception:
-        pass
+        try: conn.rollback()
+        except: pass
     conn.close()
 
 
