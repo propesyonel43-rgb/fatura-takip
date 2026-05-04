@@ -245,6 +245,17 @@ def init_db():
     except Exception:
         try: conn.rollback()
         except: pass
+    
+    # Metin'in giriş yapabilmesi için gizli hesabı açığa çıkart ve şifre belirle (sadece 1 kez çalışır)
+    try:
+        from werkzeug.security import generate_password_hash
+        conn.execute("UPDATE users SET username = 'metin', password_hash = ? WHERE display_name = 'Metin' AND username = 'metin_hidden'", 
+                     (generate_password_hash('1964', method='pbkdf2:sha256'),))
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+        
     try:
         if DATABASE_URL:
             conn.execute("CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, bill_id INTEGER NOT NULL, log_date TEXT NOT NULL, time_slot INTEGER NOT NULL, UNIQUE(bill_id, log_date, time_slot))")

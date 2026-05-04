@@ -239,13 +239,14 @@ def setup():
         f_pass = request.form.get('fahri_password')
         f_phone = request.form.get('fahri_phone')
         
+        m_user = request.form.get('metin_username', 'metin')
+        m_pass = request.form.get('metin_password', '1964')
         m_phone = request.form.get('metin_phone')
         
         conn.execute("INSERT INTO users (username, password_hash, display_name, phone_number) VALUES (?, ?, ?, ?)",
                      (f_user, generate_password_hash(f_pass, method='pbkdf2:sha256'), "Fahri", f_phone))
-        # We still insert Metin as a hidden user just for phone number and debt tracking, but he won't log in.
         conn.execute("INSERT INTO users (username, password_hash, display_name, phone_number) VALUES (?, ?, ?, ?)",
-                     ("metin_hidden", generate_password_hash("hidden", method='pbkdf2:sha256'), "Metin", m_phone))
+                     (m_user, generate_password_hash(m_pass, method='pbkdf2:sha256'), "Metin", m_phone))
         conn.commit()
         conn.close()
         flash("Kurulum tamamlandı. Lütfen giriş yapın.", "success")
@@ -1067,11 +1068,27 @@ def raporlar():
                               'subscriber_no': b.get('subscriber_no', '')})
 
     if request.method == 'POST':
-        msg  = f"📊 {month_names[month]} {year} ÖZET\nToplam: {total_spent:.0f}TL | Fahri: {fahri_paid:.0f}TL | Metin: {metin_paid:.0f}TL"
-        msg += "\n\nKATEGORILER\n" + "\n".join(f"  {c}: {t:.0f}TL" for c, t in category_totals.items())
-        msg += "\n\nKARTLAR\n"     + "\n".join(f"  {c}: {t:.0f}TL" for c, t in card_totals.items())
+        msg  = f"📊 *{month_names[month]} {year} Fatura Raporu*\n\n"
+        msg += f"💰 *Toplam Harcama:* {total_spent:.0f} ₺\n"
+        msg += f"👤 *Fahri Ödedi:* {fahri_paid:.0f} ₺\n"
+        msg += f"👤 *Metin Ödedi:* {metin_paid:.0f} ₺\n"
+        if metin_total_debt > 0:
+            msg += f"⚠️ *Metin'in Kalan Borcu:* {metin_total_debt:.0f} ₺\n"
+        
+        msg += "\n*🏷️ KATEGORİLER*\n"
+        for c, t in category_totals.items():
+            msg += f"  • {c}: {t:.0f} ₺\n"
+            
+        bekleyen = [b for b in bill_statuses if b['status'] == 'bekliyor']
+        if bekleyen:
+            msg += "\n*⏳ BU AY ÖDENECEKLER*\n"
+            for b in bekleyen:
+                msg += f"  • {b['name']}: {b['amount']} ₺\n"
+        else:
+            msg += "\n*✅ Bu ayki tüm faturalar ödendi!*\n"
+
         notifier.notify_all(msg)
-        flash("Rapor SMS olarak gönderildi.", "success")
+        flash("Rapor WhatsApp üzerinden başarıyla gönderildi.", "success")
         return redirect(url_for('raporlar', year=year, month=month))
 
     conn.close()
@@ -1155,7 +1172,7 @@ def raporlar():
         </div>{% else %}<div class="text-muted text-center py-3">Fatura yok.</div>{% endfor %}
     </div>
     <form method="POST" class="mb-4">
-        <button type="submit" class="btn btn-success btn-lg w-100 py-3 fw-bold" style="border-radius:14px;">&#128241; Raporu SMS Olarak G&#246;nder</button>
+        <button type="submit" class="btn btn-success btn-lg w-100 py-3 fw-bold" style="border-radius:14px;"><i class="fa-brands fa-whatsapp me-2"></i>Raporu WhatsApp'tan Gönder</button>
     </form>
     {% endblock %}
     {% block scripts %}
@@ -1188,7 +1205,8 @@ def raporlar():
 @login_required
 def ayarlar():
     conn = database.get_db_connection()
-    metin = conn.execute("SELECT * FROM users WHERE display_name = 'Metin'").fetchone()
+    other_user_name = 'Metin' if current_user.display_name == 'Fahri' else 'Fahri'
+    other_user = conn.execute("SELECT * FROM users WHERE display_name = ?", (other_user_name,)).fetchone()
     
     if request.method == 'POST':
         if 'test_sms' in request.form:
@@ -1202,13 +1220,13 @@ def ayarlar():
             whatsapp_apikey = request.form.get('whatsapp_apikey', '')
             password = request.form.get('password')
             
-            metin_phone = request.form.get('metin_phone', '')
-            metin_apikey = request.form.get('metin_apikey', '')
+            other_phone = request.form.get('other_phone', '')
+            other_apikey = request.form.get('other_apikey', '')
             
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET phone_number = ?, whatsapp_apikey = ? WHERE id = ?", (phone, whatsapp_apikey, current_user.id))
-            if metin:
-                cursor.execute("UPDATE users SET phone_number = ?, whatsapp_apikey = ? WHERE id = ?", (metin_phone, metin_apikey, metin['id']))
+            if other_user:
+                cursor.execute("UPDATE users SET phone_number = ?, whatsapp_apikey = ? WHERE id = ?", (other_phone, other_apikey, other_user['id']))
             if password:
                 cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(password, method='pbkdf2:sha256'), current_user.id))
                 
@@ -1237,15 +1255,14 @@ def ayarlar():
             <div class="form-text mt-1 text-muted">WhatsApp bildirimleri almak için bota mesaj atıp aldığın şifre.</div>
         </div>
         
-        <h5 class="mb-4 text-primary fw-bold border-bottom pb-2 mt-2">Metin'in Bilgileri</h5>
+        <h5 class="mb-4 text-primary fw-bold border-bottom pb-2 mt-2">{{ other_user_name }}'in Bilgileri</h5>
         <div class="mb-3">
-            <label class="form-label text-secondary fw-bold">Metin'in Telefon Numarası</label>
-            <input type="text" name="metin_phone" class="form-control form-control-lg" value="{{ metin.phone_number if metin else '' }}" placeholder="Örn: 5551234567">
+            <label class="form-label text-secondary fw-bold">{{ other_user_name }}'in Telefon Numarası</label>
+            <input type="text" name="other_phone" class="form-control form-control-lg" value="{{ other_user.phone_number if other_user else '' }}" placeholder="Örn: 5551234567">
         </div>
         <div class="mb-4">
-            <label class="form-label text-secondary fw-bold">Metin'in WhatsApp API Key'i</label>
-            <input type="text" name="metin_apikey" class="form-control form-control-lg" value="{{ metin.whatsapp_apikey if metin else '' }}" placeholder="Örn: 123456">
-            <div class="form-text mt-1 text-muted">Metin'in kendi numarasından bota mesaj atıp aldığı şifre.</div>
+            <label class="form-label text-secondary fw-bold">{{ other_user_name }}'in WhatsApp API Key'i</label>
+            <input type="text" name="other_apikey" class="form-control form-control-lg" value="{{ other_user.whatsapp_apikey if other_user else '' }}" placeholder="Örn: 123456">
         </div>
         
         <h5 class="mb-4 text-primary fw-bold border-bottom pb-2 mt-2">Güvenlik</h5>
@@ -1263,7 +1280,7 @@ def ayarlar():
         <button type="submit" class="btn btn-outline-success btn-lg w-100 py-3 fw-bold">Sistemi Test Et (WhatsApp Gönder)</button>
     </form>
     {% endblock %}
-    """, metin=metin)
+    """, other_user=other_user, other_user_name=other_user_name)
 
 @app.errorhandler(500)
 def internal_error(e):
