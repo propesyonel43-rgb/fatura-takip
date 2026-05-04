@@ -667,7 +667,7 @@ def odeme_kaydet():
             
         notifier.notify_all(msg)
         
-        flash("Ödeme başarıyla kaydedildi ve SMS gönderildi.", "success")
+        flash("Ödeme başarıyla kaydedildi ve WhatsApp bildirimi gönderildi.", "success")
         return redirect(url_for('odeme_kaydet'))
         
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
@@ -1093,6 +1093,8 @@ def raporlar():
 @login_required
 def ayarlar():
     conn = database.get_db_connection()
+    metin = conn.execute("SELECT * FROM users WHERE display_name = 'Metin'").fetchone()
+    
     if request.method == 'POST':
         if 'test_sms' in request.form:
             phone = current_user.phone_number
@@ -1110,8 +1112,13 @@ def ayarlar():
             whatsapp_apikey = request.form.get('whatsapp_apikey', '')
             password = request.form.get('password')
             
+            metin_phone = request.form.get('metin_phone', '')
+            metin_apikey = request.form.get('metin_apikey', '')
+            
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET phone_number = ?, whatsapp_apikey = ? WHERE id = ?", (phone, whatsapp_apikey, current_user.id))
+            if metin:
+                cursor.execute("UPDATE users SET phone_number = ?, whatsapp_apikey = ? WHERE id = ?", (metin_phone, metin_apikey, metin['id']))
             if password:
                 cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(password, method='pbkdf2:sha256'), current_user.id))
                 
@@ -1129,31 +1136,44 @@ def ayarlar():
     </div>
     
     <form method="POST" class="card p-4 mb-4 shadow-sm border-0">
-        <h5 class="mb-4 text-primary fw-bold border-bottom pb-2">Kişisel Bilgiler</h5>
+        <h5 class="mb-4 text-primary fw-bold border-bottom pb-2">Kendi Bilgilerin ({{ current_user.display_name }})</h5>
         <div class="mb-3">
             <label class="form-label text-secondary fw-bold">Telefon Numarası</label>
-            <input type="text" name="phone" class="form-control form-control-lg" value="{{ current_user.phone_number }}" placeholder="Örn: 5551234567">
-        </div>
-        <div class="mb-3">
-            <label class="form-label text-secondary fw-bold">WhatsApp API Key (CallMeBot)</label>
-            <input type="text" name="whatsapp_apikey" class="form-control form-control-lg" value="{{ current_user.whatsapp_apikey }}" placeholder="Örn: 123456">
-            <div class="form-text mt-1 text-muted">WhatsApp bildirimleri almak için numaradan aldığınız şifre.</div>
+            <input type="text" name="phone" class="form-control form-control-lg" value="{{ current_user.phone_number or '' }}" placeholder="Örn: 5551234567">
         </div>
         <div class="mb-4">
-            <label class="form-label text-secondary fw-bold">Yeni Şifre</label>
-            <input type="password" name="password" class="form-control form-control-lg" placeholder="Sadece değiştirmek istiyorsanız doldurun">
+            <label class="form-label text-secondary fw-bold">WhatsApp API Key (CallMeBot)</label>
+            <input type="text" name="whatsapp_apikey" class="form-control form-control-lg" value="{{ current_user.whatsapp_apikey or '' }}" placeholder="Örn: 123456">
+            <div class="form-text mt-1 text-muted">WhatsApp bildirimleri almak için bota mesaj atıp aldığın şifre.</div>
         </div>
-        <button type="submit" class="btn btn-primary btn-lg w-100 py-3 fw-bold shadow">Ayarları Kaydet</button>
+        
+        <h5 class="mb-4 text-primary fw-bold border-bottom pb-2 mt-2">Metin'in Bilgileri</h5>
+        <div class="mb-3">
+            <label class="form-label text-secondary fw-bold">Metin'in Telefon Numarası</label>
+            <input type="text" name="metin_phone" class="form-control form-control-lg" value="{{ metin.phone_number if metin else '' }}" placeholder="Örn: 5551234567">
+        </div>
+        <div class="mb-4">
+            <label class="form-label text-secondary fw-bold">Metin'in WhatsApp API Key'i</label>
+            <input type="text" name="metin_apikey" class="form-control form-control-lg" value="{{ metin.whatsapp_apikey if metin else '' }}" placeholder="Örn: 123456">
+            <div class="form-text mt-1 text-muted">Metin'in kendi numarasından bota mesaj atıp aldığı şifre.</div>
+        </div>
+        
+        <h5 class="mb-4 text-primary fw-bold border-bottom pb-2 mt-2">Güvenlik</h5>
+        <div class="mb-4">
+            <label class="form-label text-secondary fw-bold">Yeni Şifre</label>
+            <input type="password" name="password" class="form-control form-control-lg" placeholder="Sadece kendi şifreni değiştirmek istiyorsan doldur">
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg w-100 py-3 fw-bold shadow">Tüm Ayarları Kaydet</button>
     </form>
     
     <form method="POST" class="card p-4 shadow-sm border-0 bg-light">
         <h5 class="mb-3 text-secondary fw-bold">Bağlantı Testi</h5>
-        <p class="text-muted small">Bu butona basarak CallMeBot üzerinden WhatsApp'ınıza mesaj gönderip gönderemediğini test edebilirsiniz.</p>
+        <p class="text-muted small">Bu butona basarak CallMeBot üzerinden WhatsApp'ınıza test mesajı gönderebilirsiniz.</p>
         <input type="hidden" name="test_sms" value="1">
         <button type="submit" class="btn btn-outline-success btn-lg w-100 py-3 fw-bold">Sistemi Test Et (WhatsApp Gönder)</button>
     </form>
     {% endblock %}
-    """)
+    """, metin=metin)
 
 @app.errorhandler(500)
 def internal_error(e):
