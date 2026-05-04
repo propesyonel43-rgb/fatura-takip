@@ -4,3 +4,4 @@ apscheduler
 requests
 werkzeug
 gunicorn
+psycopg2-binary
