@@ -93,6 +93,13 @@ def check_bills_and_notify():
     print(f"[Cron] {now.strftime('%d.%m.%Y %H:%M')} TR saatiyle kontrol tamamlandı.")
 
 
+def format_para(value):
+    """Rakamı 10.000,00 TL formatına sokar."""
+    try:
+        return "{:,.2f}".format(float(value)).replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return value
+
 def send_monthly_summary(year, month):
     """Ay sonu genel durumunu WhatsApp'tan raporlar."""
     conn = database.get_db_connection()
@@ -118,17 +125,17 @@ def send_monthly_summary(year, month):
     for b in bills:
         cycle = conn.execute("SELECT status FROM monthly_cycles WHERE bill_id=? AND year=? AND month=?", (b['id'], year, month)).fetchone()
         if not cycle or cycle['status'] != 'odendi':
-            bekleyen.append(f"• {b['name']} ({b['amount']} TL)")
+            bekleyen.append(f"• {b['name']} ({format_para(b['amount'])} ₺)")
 
     msg = f"🏁 *{month_names[month]} {year} AY SONU ÖZETİ*\n"
     msg += "-----------------------------------\n"
-    msg += f"💰 *Toplam Harcanan:* {total:.0f} ₺\n\n"
+    msg += f"💰 *Toplam Harcanan:* {format_para(total)} ₺\n\n"
     
     if payments:
         msg += "*✅ Ödenenler:*\n"
         for p in payments:
             donem = f"{p['b_month']}/{p['b_year']}" if p.get('b_month') else "Manuel"
-            msg += f"• {p['bill_name']} ({donem}): {p['amount']:.0f} ₺\n"
+            msg += f"• {p['bill_name']} ({donem}): {format_para(p['amount'])} ₺\n"
     
     if bekleyen:
         msg += "\n*⏳ Ödenmeyenler (Kalan):*\n"

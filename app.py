@@ -213,6 +213,14 @@ BASE_TEMPLATE = """
 </html>
 """
 
+def format_para(value):
+    """Rakamı 10.000,00 TL formatına sokar."""
+    try:
+        return "{:,.2f}".format(float(value)).replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return value
+
+app.jinja_env.filters['para'] = format_para
 app.jinja_env.loader = DictLoader({'base.html': BASE_TEMPLATE})
 
 @app.before_request
@@ -375,17 +383,24 @@ def dashboard():
 
     <div class="hero-card mb-4">
         <div class="label">Bu Ay Kalan Ödenecek</div>
-        <div class="amount">{{ '%.2f'|format(remaining_bills_amount) }} ₺</div>
+        <div class="amount">{{ remaining_bills_amount|para }} ₺</div>
         
         <div class="d-flex justify-content-between mt-3 pt-2" style="border-top: 1px dotted rgba(255,255,255,0.4);">
             <div class="text-start">
                 <div class="label" style="font-size:0.65rem; opacity:0.8;">Toplam Fatura</div>
-                <div style="font-weight:600; font-size:1.1rem;">{{ '%.2f'|format(total_bills_amount) }} ₺</div>
+                <div style="font-weight:600; font-size:1.1rem;">{{ total_bills_amount|para }} ₺</div>
             </div>
             <div class="text-end">
                 <div class="label" style="font-size:0.65rem; opacity:0.8;">Ödenen</div>
-                <div style="font-weight:600; font-size:1.1rem;">{{ '%.2f'|format(paid_bills_amount) }} ₺</div>
+                <div style="font-weight:600; font-size:1.1rem;">{{ paid_bills_amount|para }} ₺</div>
             </div>
+        </div>
+    </div>
+
+    <div class="hero-card mb-4" style="background: linear-gradient(135deg, #4b5563, #1f2937); padding: 15px; margin-top: -10px;">
+        <div class="d-flex justify-content-between align-items-center">
+            <div class="label" style="margin-bottom:0;">Metin'in Toplam Borcu</div>
+            <div style="font-weight:700; font-size:1.3rem;">{{ metin_debt|para }} ₺</div>
         </div>
     </div>
 
@@ -396,7 +411,7 @@ def dashboard():
             <div class="bill-chip chip-{{ b.color }} position-relative">
                 {% if b.is_autopay %}<span class="badge" style="background:#6366f1;font-size:0.65rem;position:absolute;top:8px;right:8px;">OTO</span>{% endif %}
                 <div style="font-weight:600;font-size:0.9rem;">{{ b.name }}</div>
-                <div style="font-size:1.1rem;font-weight:700;">{{ b.amount }} ₺</div>
+                <div style="font-size:1.1rem;font-weight:700;">{{ b.amount|para }} ₺</div>
                 {% if b.color == 'success' %}<div style="font-size:0.72rem;">✓ Ödendi</div>
                 {% elif b.color == 'danger' %}<div style="font-size:0.72rem;">⚠ Geçti</div>
                 {% elif b.color == 'warning' %}<div style="font-size:0.72rem;">⏰ {{ b.days_left }} gün kaldı</div>
@@ -418,7 +433,7 @@ def dashboard():
                     <div style="font-size:0.8rem;color:var(--text-muted);">{{ p.payer_name }} · {{ p.card_used }} · {{ p.payment_date }}</div>
                 </div>
                 <div class="d-flex align-items-center gap-2">
-                    <div style="font-weight:700;color:var(--success);">{{ p.amount }} ₺</div>
+                    <div style="font-weight:700;color:var(--success);">{{ p.amount|para }} ₺</div>
                     <form method="POST" action="{{ url_for('delete_payment', payment_id=p.id) }}" onsubmit="return confirm('Bu ödemeyi silmek istediğinize emin misiniz?');">
                         <button class="btn btn-sm" style="background:#fee2e2;color:#991b1b;border:none;border-radius:8px;padding:4px 8px;">✕</button>
                     </form>
@@ -599,7 +614,7 @@ def faturalar():
                 <div>Ödeme Günü: <strong>Ayın {{ b.due_day }}. günü</strong></div>
                 <div>Son Gün: <strong style="color:var(--danger);">Ayın {{ b.last_payment_day }}. günü</strong></div>
             </div>
-            <div style="font-weight:700;font-size:1.4rem;color:var(--primary);">{{ b.amount }} ₺</div>
+            <div style="font-weight:700;font-size:1.4rem;color:var(--primary);">{{ b.amount|para }} ₺</div>
         </div>
     </div>
     {% else %}
@@ -958,7 +973,7 @@ def borclar():
 
     <div class="card p-4 mb-4 text-center bg-danger text-white shadow-lg border-0" style="background: linear-gradient(135deg, #dc3545, #b02a37);">
         <h5 class="opacity-75">Metin'in Toplam Borcu</h5>
-        <div class="dashboard-debt" style="font-size: 3.5rem;">{{ total }} TL</div>
+        <div class="dashboard-debt" style="font-size: 3.5rem;">{{ total|para }} TL</div>
     </div>
     
     <h5 class="text-secondary mb-3">Bekleyen Borç Kalemleri</h5>
@@ -972,7 +987,7 @@ def borclar():
                 <div>
                     <h5 class="mb-1 fw-bold">{{ d.bill_name if d.bill_name else 'Manuel Borç' }}</h5>
                     <small class="text-muted d-block mb-1">{{ d.payment_date if d.payment_date else 'Özel Kayıt' }}</small>
-                    <div class="fw-bold fs-5 text-danger">{{ d.amount }} TL</div>
+                    <div class="fw-bold fs-5 text-danger">{{ d.amount|para }} TL</div>
                 </div>
             </div>
             <form method="POST" onsubmit="return confirm('Bu borcu ödendi olarak işaretlemek istiyor musunuz? Geri alınamaz!');">
@@ -1022,7 +1037,7 @@ def manuel_borc_ekle():
         total_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
         total = total_row['t'] or 0
         
-        msg = f"💸 *MANUEL BORÇ KAYDI*\nMetin, Fahri sana bir borç yazdı.\n*Neden:* {reason}\n*Tutar:* {amount} TL\n*Toplam Borcun:* {total} TL"
+        msg = f"💸 *MANUEL BORÇ KAYDI*\nMetin, Fahri sana bir borç yazdı.\n*Neden:* {reason}\n*Tutar:* {format_para(amount)} TL\n*Toplam Borcun:* {format_para(total)} TL"
         notifier.notify_all(msg)
         flash("Manuel borç eklendi.", "success")
         
@@ -1096,7 +1111,7 @@ def takvim():
                             {% for item in monthly_data[day] %}
                             <div class="cal-item {{ item.css_class }} shadow-sm">
                                 <div class="text-truncate fw-bold">{{ item.name }}</div>
-                                <div>{{ item.amount }}</div>
+                                <div>{{ item.amount|para }}</div>
                             </div>
                             {% endfor %}
                         {% endif %}
@@ -1129,29 +1144,40 @@ def raporlar():
     start_date = f"{year}-{month:02d}-01"
     end_date   = f"{year}-{month:02d}-31"
 
-    # Hem nakit akışını (bu ay ödenen her şey) hem de dönem bilgisini çekiyoruz
-    payments = conn.execute("""
+    # 1. DÖNEM BAZLI: Bu ayın faturaları için yapılan tüm ödemeler (Raporun ana rakamlarını bu belirler)
+    period_payments = conn.execute("""
+        SELECT p.*, b.category, b.name as bill_name, mc.year as bill_year, mc.month as bill_month
+        FROM monthly_cycles mc
+        JOIN payments p ON mc.payment_id = p.id
+        JOIN bills b ON mc.bill_id = b.id
+        WHERE mc.year = ? AND mc.month = ?
+    """, (year, month)).fetchall()
+    period_payments = [dict(p) for p in period_payments]
+
+    # 2. KASA BAZLI: Bu takvim ayı içerisinde yapılan tüm ödemeler (Nakit akışını gösterir)
+    cash_payments = conn.execute("""
         SELECT p.*, b.category, b.name as bill_name, mc.year as bill_year, mc.month as bill_month
         FROM payments p 
         JOIN bills b ON p.bill_id = b.id
         LEFT JOIN monthly_cycles mc ON p.id = mc.payment_id
         WHERE p.payment_date >= ? AND p.payment_date <= ?
     """, (start_date, end_date)).fetchall()
-    payments = [dict(p) for p in payments]
+    cash_payments = [dict(p) for p in cash_payments]
 
-    total_spent = sum(p['amount'] for p in payments)
+    # Ana rakamlar faturanın ait olduğu aya (döneme) göre hesaplanır
+    total_spent = sum(p['amount'] for p in period_payments)
 
     fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
     fahri_id = fahri['id'] if fahri else 0
     metin_id = metin['id'] if metin else 0
 
-    fahri_paid  = sum(p['amount'] for p in payments if p['paid_by_user_id'] == fahri_id)
-    metin_paid  = sum(p['amount'] for p in payments if p['paid_by_user_id'] == metin_id)
+    fahri_paid  = sum(p['amount'] for p in period_payments if p['paid_by_user_id'] == fahri_id)
+    metin_paid  = sum(p['amount'] for p in period_payments if p['paid_by_user_id'] == metin_id)
 
     category_totals = {}
     card_totals = {}
-    for p in payments:
+    for p in period_payments:
         category_totals[p['category']] = category_totals.get(p['category'], 0) + p['amount']
         card_totals[p['card_used']]    = card_totals.get(p['card_used'], 0) + p['amount']
 
@@ -1181,33 +1207,33 @@ def raporlar():
                               'subscriber_no': b.get('subscriber_no', '')})
 
     if request.method == 'POST':
-        msg  = f"📊 *{month_names[month]} {year} AYI DETAYLI RAPORU*\n"
+        msg  = f"📊 *{month_names[month]} {year} DÖNEM RAPORU*\n"
         msg += "-----------------------------------\n\n"
         
-        msg += "*💰 YAPILAN ÖDEMELER (Kasa çıkışı)*\n"
-        if payments:
-            for p in payments:
-                donem = f"{p['bill_month']}/{p['bill_year']}" if p.get('bill_month') else "Manuel"
-                msg += f"• {p['bill_name']} ({donem}): *{p['amount']:.0f} ₺*\n"
+        msg += "*📋 BU DÖNEMİN FATURALARI*\n"
+        if period_payments:
+            for p in period_payments:
+                msg += f"• {p['bill_name']}: *{format_para(p['amount'])} ₺*\n"
         else:
-            msg += "_Bu ay henüz ödeme yapılmadı._\n"
+            msg += "_Bu döneme ait ödeme yok._\n"
             
-        msg += f"\n💵 *TOPLAM HARCAMA:* {total_spent:.0f} ₺\n"
+        msg += f"\n💰 *DÖNEM TOPLAMI:* {format_para(total_spent)} ₺\n"
         msg += "-----------------------------------\n"
-        msg += f"👤 *Fahri:* {fahri_paid:.0f} ₺ | 👤 *Metin:* {metin_paid:.0f} ₺\n"
+        msg += f"👤 *Fahri:* {format_para(fahri_paid)} ₺ | 👤 *Metin:* {format_para(metin_paid)} ₺\n"
+        
+        if cash_payments:
+            msg += "\n*💸 BU AY CEPTEN ÇIKAN TOPLAM*\n"
+            c_total = sum(p['amount'] for p in cash_payments)
+            msg += f"Bu ay toplam *{format_para(c_total)} ₺* ödeme yapıldı.\n"
         
         if metin_total_debt > 0:
-            msg += f"⚠️ *Metin'in Kalan Borcu:* {metin_total_debt:.0f} ₺\n"
-        
-        msg += "\n*🏷️ KATEGORİ ÖZETİ*\n"
-        for c, t in category_totals.items():
-            msg += f"• {c}: {t:.0f} ₺\n"
+            msg += f"⚠️ *Metin'in Kalan Borcu:* {format_para(metin_total_debt)} ₺\n"
             
         bekleyen = [b for b in bill_statuses if b['status'] == 'bekliyor']
         if bekleyen:
             msg += "\n*⏳ HENÜZ ÖDENMEYENLER*\n"
             for b in bekleyen:
-                msg += f"• {b['name']}: {b['amount']} ₺\n"
+                msg += f"• {b['name']}: {format_para(b['amount'])} ₺\n"
         else:
             msg += "\n*✅ Tüm aylık faturalar ödendi! *\n"
 
@@ -1232,19 +1258,19 @@ def raporlar():
     <div class="row g-2 mb-4">
         <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--primary);">
             <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Toplam Harcama</div>
-            <div style="font-size:1.5rem;font-weight:700;color:var(--primary);">{{ "%.0f"|format(total_spent) }} &#8378;</div>
+            <div style="font-size:1.5rem;font-weight:700;color:var(--primary);">{{ total_spent|para }} ₺</div>
         </div></div>
         <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--danger);">
             <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Metin Borcu</div>
-            <div style="font-size:1.5rem;font-weight:700;color:var(--danger);">{{ "%.0f"|format(metin_total_debt) }} &#8378;</div>
+            <div style="font-size:1.5rem;font-weight:700;color:var(--danger);">{{ metin_total_debt|para }} ₺</div>
         </div></div>
         <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid #6366f1;">
             <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Fahri &#214;dedi</div>
-            <div style="font-size:1.4rem;font-weight:700;color:#6366f1;">{{ "%.0f"|format(fahri_paid) }} &#8378;</div>
+            <div style="font-size:1.4rem;font-weight:700;color:#6366f1;">{{ fahri_paid|para }} ₺</div>
         </div></div>
         <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--success);">
             <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Metin &#214;dedi</div>
-            <div style="font-size:1.4rem;font-weight:700;color:var(--success);">{{ "%.0f"|format(metin_paid) }} &#8378;</div>
+            <div style="font-size:1.4rem;font-weight:700;color:var(--success);">{{ metin_paid|para }} ₺</div>
         </div></div>
     </div>
     <div class="card p-3 mb-4">
@@ -1257,7 +1283,7 @@ def raporlar():
         <div class="mb-3">
             <div class="d-flex justify-content-between mb-1">
                 <span style="font-weight:500;font-size:0.9rem;">{{ cat }}</span>
-                <span style="font-weight:600;font-size:0.9rem;">{{ "%.0f"|format(amount) }} &#8378;
+                <span style="font-weight:600;font-size:0.9rem;">{{ amount|para }} ₺
                     {% if total_spent > 0 %}<span style="color:var(--text-muted);font-size:0.8rem;">({{ (amount/total_spent*100)|int }}%)</span>{% endif %}
                 </span>
             </div>
@@ -1276,25 +1302,42 @@ def raporlar():
                 <div style="height:4px;width:80px;background:#e2e8f0;border-radius:2px;overflow:hidden;">
                     <div style="height:100%;background:var(--primary);width:{% if total_spent > 0 %}{{ (amount/total_spent*100)|int }}%{% else %}0%{% endif %};"></div>
                 </div>
-                <span style="font-weight:700;font-size:0.9rem;">{{ "%.0f"|format(amount) }} &#8378;</span>
+                <span style="font-weight:700;font-size:0.9rem;">{{ amount|para }} ₺</span>
             </div>
         </div>{% else %}<div class="text-muted text-center py-3">Bu ay veri yok.</div>{% endfor %}
     </div>
     <div class="card p-3 mb-4">
-        <div class="section-title mb-3">{{ month_names[month] }} {{ year }} AYI TÜM ÖDEMELER</div>
-        {% for p in payments %}
-        <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f8fafc;">
+        <div class="section-title mb-3" style="color:var(--success);">✅ BU DÖNEMİN ÖDENEN FATURALARI</div>
+        {% for p in period_payments %}
+        <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f0fdf4;border:1px solid #dcfce7;">
             <div>
                 <div style="font-weight:600;font-size:0.9rem;">{{ p.bill_name }}</div>
                 <div style="font-size:0.75rem;color:var(--text-muted);">
-                    Dönem: <strong>{{ p.bill_month }}/{{ p.bill_year }}</strong> | Tarih: {{ p.payment_date }}
+                    Ödeme Tarihi: {{ p.payment_date }}
                 </div>
             </div>
             <div class="d-flex align-items-center gap-2">
-                <span style="font-weight:700;font-size:0.9rem;">{{ "%.0f"|format(p.amount) }} ₺</span>
-                <span class="badge" style="background:#d1fae5;color:#065f46;">✓</span>
+                <span style="font-weight:700;font-size:0.9rem;">{{ p.amount|para }} ₺</span>
+                <span class="badge bg-success">✓</span>
             </div>
-        </div>{% else %}<div class="text-muted text-center py-3">Bu ay ödeme kaydı yok.</div>{% endfor %}
+        </div>{% else %}<div class="text-muted text-center py-3">Bu döneme ait ödenmiş fatura yok.</div>{% endfor %}
+    </div>
+
+    <div class="card p-3 mb-4">
+        <div class="section-title mb-3" style="color:var(--primary);">💰 BU TAKVİM AYINDAKİ KASA ÇIKIŞI</div>
+        <p class="text-muted small mb-3">Seçilen ay içerisinde yapılan tüm ödemeler (diğer ayların faturaları dahil).</p>
+        {% for p in cash_payments %}
+        <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;">
+            <div>
+                <div style="font-weight:600;font-size:0.9rem;">{{ p.bill_name }}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);">
+                    Fatura Dönemi: <strong>{{ p.bill_month }}/{{ p.bill_year }}</strong>
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <span style="font-weight:700;font-size:0.9rem;">{{ p.amount|para }} ₺</span>
+            </div>
+        </div>{% else %}<div class="text-muted text-center py-3">Bu takvim ayında kasa çıkışı yok.</div>{% endfor %}
     </div>
 
     <div class="card p-3 mb-4">
@@ -1306,7 +1349,7 @@ def raporlar():
                 {% if b.subscriber_no %}<div style="font-size:0.75rem;color:var(--text-muted);">Abone: {{ b.subscriber_no }}</div>{% endif %}
             </div>
             <div class="d-flex align-items-center gap-2">
-                <span style="font-weight:700;font-size:0.9rem;">{{ b.amount }} ₺</span>
+                <span style="font-weight:700;font-size:0.9rem;">{{ b.amount|para }} ₺</span>
                 {% if b.status == 'odendi' %}<span class="badge" style="background:#d1fae5;color:#065f46;">&#10003; &#214;dendi</span>
                 {% else %}<span class="badge" style="background:#fee2e2;color:#991b1b;">&#9203; Bekliyor</span>{% endif %}
             </div>
@@ -1338,7 +1381,8 @@ def raporlar():
     return render_template_string(TMPL, year=year, month=month, month_names=month_names,
         total_spent=total_spent, fahri_paid=fahri_paid, metin_paid=metin_paid,
         metin_total_debt=metin_total_debt, category_totals=category_totals,
-        card_totals=card_totals, bill_statuses=bill_statuses)
+        card_totals=card_totals, bill_statuses=bill_statuses,
+        period_payments=period_payments, cash_payments=cash_payments)
 
 
 
