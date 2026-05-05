@@ -1301,29 +1301,29 @@ def raporlar():
         <canvas id="trendChart" height="150"></canvas>
     </div>
     <div class="card p-3 mb-4">
-        <div class="section-title mb-3">Kategorilere G&#246;re</div>
+        <div class="section-title mb-3">Kategorilere Göre</div>
         {% if category_totals %}{% for cat, amount in category_totals.items() %}
         <div class="mb-3">
             <div class="d-flex justify-content-between mb-1">
                 <span style="font-weight:500;font-size:0.9rem;">{{ cat }}</span>
                 <span style="font-weight:600;font-size:0.9rem;">{{ amount|para }} ₺
-                    {% if total_spent > 0 %}<span style="color:var(--text-muted);font-size:0.8rem;">({{ (amount/total_spent*100)|int }}%)</span>{% endif %}
+                    {% if period_total_spent > 0 %}<span style="color:var(--text-muted);font-size:0.8rem;">({{ (amount/period_total_spent*100)|int }}%)</span>{% endif %}
                 </span>
             </div>
             <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
-                <div style="height:100%;border-radius:3px;background:var(--primary);width:{% if total_spent > 0 %}{{ (amount/total_spent*100)|int }}%{% else %}0%{% endif %};"></div>
+                <div style="height:100%;border-radius:3px;background:var(--primary);width:{% if period_total_spent > 0 %}{{ (amount/period_total_spent*100)|int }}%{% else %}0%{% endif %};"></div>
             </div>
         </div>{% endfor %}{% else %}
         <div class="text-muted text-center py-3">Bu ay veri yok.</div>{% endif %}
     </div>
     <div class="card p-3 mb-4">
-        <div class="section-title mb-3">Kart Kullan&#305;m&#305;</div>
+        <div class="section-title mb-3">KART KULLANIMI</div>
         {% for card, amount in card_totals.items() %}
         <div class="d-flex justify-content-between align-items-center mb-2">
             <span style="font-weight:500;">{{ card }}</span>
             <div class="d-flex align-items-center gap-2">
                 <div style="height:4px;width:80px;background:#e2e8f0;border-radius:2px;overflow:hidden;">
-                    <div style="height:100%;background:var(--primary);width:{% if total_spent > 0 %}{{ (amount/total_spent*100)|int }}%{% else %}0%{% endif %};"></div>
+                    <div style="height:100%;background:var(--primary);width:{% if period_total_spent > 0 %}{{ (amount/period_total_spent*100)|int }}%{% else %}0%{% endif %};"></div>
                 </div>
                 <span style="font-weight:700;font-size:0.9rem;">{{ amount|para }} ₺</span>
             </div>
