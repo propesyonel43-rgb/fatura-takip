@@ -314,6 +314,7 @@ def dashboard():
     
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
     
+    # Metin'in borcu hala arka planda hesaplansın (varsa başka yerde kullanırız)
     fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
     
@@ -332,11 +333,20 @@ def dashboard():
     
     dashboard_bills = []
     today_day = today.day
+    total_bills_amount = 0
+    paid_bills_amount = 0
+    
     for b in bills:
         cycle = conn.execute("SELECT status FROM monthly_cycles WHERE bill_id = ? AND year = ? AND month = ?", (b['id'], today.year, today.month)).fetchone()
+        
+        total_bills_amount += b['amount']
+        
         status_color = ""
         days_left = b['due_day'] - today_day
-        if cycle and cycle['status'] == 'odendi':
+        
+        is_paid = cycle and cycle['status'] == 'odendi'
+        if is_paid:
+            paid_bills_amount += b['amount']
             status_color = "success"
         elif days_left < 0 or days_left == 0:
             status_color = "danger"
@@ -353,7 +363,9 @@ def dashboard():
             'is_autopay': b['is_autopay']
         })
         
+    remaining_bills_amount = total_bills_amount - paid_bills_amount
     conn.close()
+    
     return render_template_string("""{% extends 'base.html' %}
     {% block content %}
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -362,9 +374,19 @@ def dashboard():
     </div>
 
     <div class="hero-card mb-4">
-        <div class="label">Metin'in Toplam Borcu</div>
-        <div class="amount">{{ '%.2f'|format(metin_debt) }} ₺</div>
-        <div style="font-size:0.8rem;opacity:0.75;margin-top:6px;">Güncel bakiye</div>
+        <div class="label">Bu Ay Kalan Ödenecek</div>
+        <div class="amount">{{ '%.2f'|format(remaining_bills_amount) }} ₺</div>
+        
+        <div class="d-flex justify-content-between mt-3 pt-2" style="border-top: 1px dotted rgba(255,255,255,0.4);">
+            <div class="text-start">
+                <div class="label" style="font-size:0.65rem; opacity:0.8;">Toplam Fatura</div>
+                <div style="font-weight:600; font-size:1.1rem;">{{ '%.2f'|format(total_bills_amount) }} ₺</div>
+            </div>
+            <div class="text-end">
+                <div class="label" style="font-size:0.65rem; opacity:0.8;">Ödenen</div>
+                <div style="font-weight:600; font-size:1.1rem;">{{ '%.2f'|format(paid_bills_amount) }} ₺</div>
+            </div>
+        </div>
     </div>
 
     <div class="section-title">Bu Ay Faturalar</div>
@@ -408,7 +430,13 @@ def dashboard():
         {% endfor %}
     </div>
     {% endblock %}
-    """, metin_debt=metin_debt, dashboard_bills=dashboard_bills, payments=payments)
+    """, 
+    metin_debt=metin_debt, 
+    dashboard_bills=dashboard_bills, 
+    payments=payments,
+    total_bills_amount=total_bills_amount,
+    paid_bills_amount=paid_bills_amount,
+    remaining_bills_amount=remaining_bills_amount)
 
 @app.route('/fatura_duzenle/<int:bill_id>', methods=['GET', 'POST'])
 @login_required
