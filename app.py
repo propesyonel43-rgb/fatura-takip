@@ -786,7 +786,7 @@ def odeme_kaydet():
         
         conn.commit()
         
-        msg = f"✅ {paid_by_display} odedi: {bill['name']} ({bill_month}/{bill_year}) - {amount}TL ({card_used})"
+        msg = f"✅ *{paid_by_display}* odedi: *{bill['name']}* ({bill['category']})\n📅 *Dönem:* {bill_month}/{bill_year}\n💰 *Tutar:* {amount}TL\n💳 *Kart:* {card_used}"
         if debt_amount > 0 and metin and fahri:
             if paid_by_display == 'Fahri':
                 total_debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
@@ -1125,13 +1125,15 @@ def raporlar():
     month = int(request.args.get('month', datetime.now().month))
     month_names = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
 
-    conn = database.get_db_connection()
     start_date = f"{year}-{month:02d}-01"
     end_date   = f"{year}-{month:02d}-31"
 
+    # Hem nakit akışını (bu ay ödenen her şey) hem de dönem bilgisini çekiyoruz
     payments = conn.execute("""
-        SELECT p.*, b.category, b.name as bill_name
-        FROM payments p JOIN bills b ON p.bill_id = b.id
+        SELECT p.*, b.category, b.name as bill_name, mc.year as bill_year, mc.month as bill_month
+        FROM payments p 
+        JOIN bills b ON p.bill_id = b.id
+        LEFT JOIN monthly_cycles mc ON p.id = mc.payment_id
         WHERE p.payment_date >= ? AND p.payment_date <= ?
     """, (start_date, end_date)).fetchall()
     payments = [dict(p) for p in payments]
@@ -1178,27 +1180,38 @@ def raporlar():
                               'subscriber_no': b.get('subscriber_no', '')})
 
     if request.method == 'POST':
-        msg  = f"📊 *{month_names[month]} {year} Fatura Raporu*\n\n"
-        msg += f"💰 *Toplam Harcama:* {total_spent:.0f} ₺\n"
-        msg += f"👤 *Fahri Ödedi:* {fahri_paid:.0f} ₺\n"
-        msg += f"👤 *Metin Ödedi:* {metin_paid:.0f} ₺\n"
+        msg  = f"📊 *{month_names[month]} {year} AYI DETAYLI RAPORU*\n"
+        msg += "-----------------------------------\n\n"
+        
+        msg += "*💰 YAPILAN ÖDEMELER (Kasa çıkışı)*\n"
+        if payments:
+            for p in payments:
+                donem = f"{p['bill_month']}/{p['bill_year']}" if p.get('bill_month') else "Manuel"
+                msg += f"• {p['bill_name']} ({donem}): *{p['amount']:.0f} ₺*\n"
+        else:
+            msg += "_Bu ay henüz ödeme yapılmadı._\n"
+            
+        msg += f"\n💵 *TOPLAM HARCAMA:* {total_spent:.0f} ₺\n"
+        msg += "-----------------------------------\n"
+        msg += f"👤 *Fahri:* {fahri_paid:.0f} ₺ | 👤 *Metin:* {metin_paid:.0f} ₺\n"
+        
         if metin_total_debt > 0:
             msg += f"⚠️ *Metin'in Kalan Borcu:* {metin_total_debt:.0f} ₺\n"
         
-        msg += "\n*🏷️ KATEGORİLER*\n"
+        msg += "\n*🏷️ KATEGORİ ÖZETİ*\n"
         for c, t in category_totals.items():
-            msg += f"  • {c}: {t:.0f} ₺\n"
+            msg += f"• {c}: {t:.0f} ₺\n"
             
         bekleyen = [b for b in bill_statuses if b['status'] == 'bekliyor']
         if bekleyen:
-            msg += "\n*⏳ BU AY ÖDENECEKLER*\n"
+            msg += "\n*⏳ HENÜZ ÖDENMEYENLER*\n"
             for b in bekleyen:
-                msg += f"  • {b['name']}: {b['amount']} ₺\n"
+                msg += f"• {b['name']}: {b['amount']} ₺\n"
         else:
-            msg += "\n*✅ Bu ayki tüm faturalar ödendi!*\n"
+            msg += "\n*✅ Tüm aylık faturalar ödendi! *\n"
 
         notifier.notify_all(msg)
-        flash("Rapor WhatsApp üzerinden başarıyla gönderildi.", "success")
+        flash("Detaylı rapor WhatsApp üzerinden başarıyla gönderildi.", "success")
         return redirect(url_for('raporlar', year=year, month=month))
 
     conn.close()
@@ -1267,7 +1280,24 @@ def raporlar():
         </div>{% else %}<div class="text-muted text-center py-3">Bu ay veri yok.</div>{% endfor %}
     </div>
     <div class="card p-3 mb-4">
-        <div class="section-title mb-3">{{ month_names[month] }} {{ year }} Fatura Durumu</div>
+        <div class="section-title mb-3">{{ month_names[month] }} {{ year }} AYI TÜM ÖDEMELER</div>
+        {% for p in payments %}
+        <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f8fafc;">
+            <div>
+                <div style="font-weight:600;font-size:0.9rem;">{{ p.bill_name }}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);">
+                    Dönem: <strong>{{ p.bill_month }}/{{ p.bill_year }}</strong> | Tarih: {{ p.payment_date }}
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <span style="font-weight:700;font-size:0.9rem;">{{ "%.0f"|format(p.amount) }} ₺</span>
+                <span class="badge" style="background:#d1fae5;color:#065f46;">✓</span>
+            </div>
+        </div>{% else %}<div class="text-muted text-center py-3">Bu ay ödeme kaydı yok.</div>{% endfor %}
+    </div>
+
+    <div class="card p-3 mb-4">
+        <div class="section-title mb-3">{{ month_names[month] }} {{ year }} FATURA DURUMU (Bekleyenler)</div>
         {% for b in bill_statuses %}
         <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f8fafc;">
             <div>
@@ -1275,7 +1305,7 @@ def raporlar():
                 {% if b.subscriber_no %}<div style="font-size:0.75rem;color:var(--text-muted);">Abone: {{ b.subscriber_no }}</div>{% endif %}
             </div>
             <div class="d-flex align-items-center gap-2">
-                <span style="font-weight:700;font-size:0.9rem;">{{ b.amount }} &#8378;</span>
+                <span style="font-weight:700;font-size:0.9rem;">{{ b.amount }} ₺</span>
                 {% if b.status == 'odendi' %}<span class="badge" style="background:#d1fae5;color:#065f46;">&#10003; &#214;dendi</span>
                 {% else %}<span class="badge" style="background:#fee2e2;color:#991b1b;">&#9203; Bekliyor</span>{% endif %}
             </div>

@@ -84,7 +84,60 @@ def check_bills_and_notify():
             print(f"[Bildirim Log Hatası]: {e}")
 
     conn.close()
+    
+    # AY SONU ÖZETİ: Her ayın son günü saat 21:00'de genel rapor atar
+    import calendar
+    if now.hour == 21 and now.day == calendar.monthrange(now.year, now.month)[1]:
+        send_monthly_summary(now.year, now.month)
+
     print(f"[Cron] {now.strftime('%d.%m.%Y %H:%M')} TR saatiyle kontrol tamamlandı.")
+
+
+def send_monthly_summary(year, month):
+    """Ay sonu genel durumunu WhatsApp'tan raporlar."""
+    conn = database.get_db_connection()
+    month_names = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    
+    # Bu ay yapılan ödemeler
+    start_date = f"{year}-{month:02d}-01"
+    end_date   = f"{year}-{month:02d}-31"
+    
+    payments = conn.execute("""
+        SELECT p.*, b.name as bill_name, mc.year as b_year, mc.month as b_month
+        FROM payments p 
+        JOIN bills b ON p.bill_id = b.id
+        LEFT JOIN monthly_cycles mc ON p.id = mc.payment_id
+        WHERE p.payment_date >= ? AND p.payment_date <= ?
+    """, (start_date, end_date)).fetchall()
+    
+    total = sum(p['amount'] for p in payments)
+    
+    # Bekleyenler
+    bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
+    bekleyen = []
+    for b in bills:
+        cycle = conn.execute("SELECT status FROM monthly_cycles WHERE bill_id=? AND year=? AND month=?", (b['id'], year, month)).fetchone()
+        if not cycle or cycle['status'] != 'odendi':
+            bekleyen.append(f"• {b['name']} ({b['amount']} TL)")
+
+    msg = f"🏁 *{month_names[month]} {year} AY SONU ÖZETİ*\n"
+    msg += "-----------------------------------\n"
+    msg += f"💰 *Toplam Harcanan:* {total:.0f} ₺\n\n"
+    
+    if payments:
+        msg += "*✅ Ödenenler:*\n"
+        for p in payments:
+            donem = f"{p['b_month']}/{p['b_year']}" if p.get('b_month') else "Manuel"
+            msg += f"• {p['bill_name']} ({donem}): {p['amount']:.0f} ₺\n"
+    
+    if bekleyen:
+        msg += "\n*⏳ Ödenmeyenler (Kalan):*\n"
+        msg += "\n".join(bekleyen)
+    else:
+        msg += "\n*✅ Harika! Bu ay tüm faturalar kapatıldı.*"
+        
+    notifier.notify_all(msg)
+    conn.close()
 
 
 def start_scheduler():
