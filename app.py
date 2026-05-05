@@ -782,7 +782,7 @@ def odeme_kaydet():
                          (payment_id, bill_id, bill_year, bill_month))
         else:
             conn.execute("INSERT INTO monthly_cycles (bill_id, year, month, status, payment_id) VALUES (?, ?, ?, 'odendi', ?)",
-                         (bill_id, bill_year, bill_month, 'odendi', payment_id))
+                         (bill_id, bill_year, bill_month, payment_id))
         
         conn.commit()
         
@@ -925,10 +925,10 @@ def borclar():
     debts = conn.execute('''
         SELECT d.*, p.payment_date, b.name as bill_name 
         FROM debts d
-        JOIN payments p ON d.payment_id = p.id
-        JOIN bills b ON p.bill_id = b.id
+        LEFT JOIN payments p ON d.payment_id = p.id
+        LEFT JOIN bills b ON p.bill_id = b.id
         WHERE d.debtor_user_id = ? AND d.creditor_user_id = ? AND d.is_paid = 0
-        ORDER BY p.payment_date DESC
+        ORDER BY d.id DESC
     ''', (metin['id'], fahri['id'])).fetchall()
     
     total_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
@@ -965,10 +965,15 @@ def borclar():
     <div class="list-group shadow-sm">
         {% for d in debts %}
         <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center p-3 border-start border-4 border-danger">
-            <div>
-                <h5 class="mb-1 fw-bold">{{ d.bill_name if d.bill_name else 'Manuel Borç' }}</h5>
-                <small class="text-muted d-block mb-1">{{ d.payment_date if d.payment_date else 'Özel Kayıt' }}</small>
-                <div class="fw-bold fs-5 text-danger">{{ d.amount }} TL</div>
+            <div class="d-flex align-items-center gap-3">
+                <form method="POST" action="{{ url_for('delete_debt', debt_id=d.id) }}" onsubmit="return confirm('Bu borç kaydını tamamen silmek istiyor musunuz?');" style="margin:0;">
+                    <button class="btn btn-sm" style="background:#fee2e2;color:#991b1b;border:none;border-radius:8px;padding:4px 8px;">✕</button>
+                </form>
+                <div>
+                    <h5 class="mb-1 fw-bold">{{ d.bill_name if d.bill_name else 'Manuel Borç' }}</h5>
+                    <small class="text-muted d-block mb-1">{{ d.payment_date if d.payment_date else 'Özel Kayıt' }}</small>
+                    <div class="fw-bold fs-5 text-danger">{{ d.amount }} TL</div>
+                </div>
             </div>
             <form method="POST" onsubmit="return confirm('Bu borcu ödendi olarak işaretlemek istiyor musunuz? Geri alınamaz!');">
                 <input type="hidden" name="debt_id" value="{{ d.id }}">
@@ -985,6 +990,16 @@ def borclar():
     </div>
     {% endblock %}
     """, debts=debts, total=total)
+
+@app.route('/delete_debt/<int:debt_id>', methods=['POST'])
+@login_required
+def delete_debt(debt_id):
+    conn = database.get_db_connection()
+    conn.execute("DELETE FROM debts WHERE id = ?", (debt_id,))
+    conn.commit()
+    conn.close()
+    flash("Borç kaydı silindi.", "success")
+    return redirect(url_for('borclar'))
 
 @app.route('/manuel_borc_ekle', methods=['POST'])
 @login_required
