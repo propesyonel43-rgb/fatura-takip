@@ -938,10 +938,11 @@ def borclar():
         return redirect(url_for('borclar'))
         
     debts = conn.execute('''
-        SELECT d.*, p.payment_date, b.name as bill_name 
+        SELECT d.*, p.payment_date, b.name as bill_name, mc.year as bill_year, mc.month as bill_month
         FROM debts d
         LEFT JOIN payments p ON d.payment_id = p.id
         LEFT JOIN bills b ON p.bill_id = b.id
+        LEFT JOIN monthly_cycles mc ON p.id = mc.payment_id
         WHERE d.debtor_user_id = ? AND d.creditor_user_id = ? AND d.is_paid = 0
         ORDER BY d.id DESC
     ''', (metin['id'], fahri['id'])).fetchall()
@@ -985,7 +986,7 @@ def borclar():
                     <button class="btn btn-sm" style="background:#fee2e2;color:#991b1b;border:none;border-radius:8px;padding:4px 8px;">✕</button>
                 </form>
                 <div>
-                    <h5 class="mb-1 fw-bold">{{ d.bill_name if d.bill_name else 'Manuel Borç' }}</h5>
+                    <h5 class="mb-1 fw-bold">{{ d.bill_name if d.bill_name else 'Manuel Borç' }} {% if d.bill_month %}<span class="badge bg-secondary fs-6 ms-2" style="font-weight:500;">{{ d.bill_month }}/{{ d.bill_year }}</span>{% endif %}</h5>
                     <small class="text-muted d-block mb-1">{{ d.payment_date if d.payment_date else 'Özel Kayıt' }}</small>
                     <div class="fw-bold fs-5 text-danger">{{ d.amount|para }} TL</div>
                 </div>
@@ -1164,19 +1165,22 @@ def raporlar():
     """, (start_date, end_date)).fetchall()
     cash_payments = [dict(p) for p in cash_payments]
 
-    # Ana rakamlar faturanın ait olduğu aya (döneme) göre hesaplanır
-    total_spent = sum(p['amount'] for p in period_payments)
+    # Ana rakamları hem Kasa hem Dönem bazlı olarak ayırıyoruz ki karmaşa bitsin
+    period_total_spent = sum(p['amount'] for p in period_payments)
+    
+    cash_total_spent = sum(p['amount'] for p in cash_payments)
 
     fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
     fahri_id = fahri['id'] if fahri else 0
     metin_id = metin['id'] if metin else 0
 
-    fahri_paid  = sum(p['amount'] for p in period_payments if p['paid_by_user_id'] == fahri_id)
-    metin_paid  = sum(p['amount'] for p in period_payments if p['paid_by_user_id'] == metin_id)
+    cash_fahri_paid  = sum(p['amount'] for p in cash_payments if p['paid_by_user_id'] == fahri_id)
+    cash_metin_paid  = sum(p['amount'] for p in cash_payments if p['paid_by_user_id'] == metin_id)
 
     category_totals = {}
     card_totals = {}
+    # Kategoriler dönemin faturalarına göre
     for p in period_payments:
         category_totals[p['category']] = category_totals.get(p['category'], 0) + p['amount']
         card_totals[p['card_used']]    = card_totals.get(p['card_used'], 0) + p['amount']
@@ -1191,8 +1195,12 @@ def raporlar():
     for i in range(5, -1, -1):
         ref = datetime(year, month, 1) - timedelta(days=i * 30)
         m, y = ref.month, ref.year
-        sd, ed = f"{y}-{m:02d}-01", f"{y}-{m:02d}-31"
-        row = conn.execute("SELECT COALESCE(SUM(amount),0) as t FROM payments WHERE payment_date>=? AND payment_date<=?", (sd, ed)).fetchone()
+        row = conn.execute("""
+            SELECT COALESCE(SUM(p.amount),0) as t 
+            FROM monthly_cycles mc
+            JOIN payments p ON mc.payment_id = p.id
+            WHERE mc.year = ? AND mc.month = ?
+        """, (y, m)).fetchone()
         trend_labels.append(month_names[m])
         trend_data.append(float(row['t'] or 0))
 
@@ -1202,6 +1210,18 @@ def raporlar():
         b = dict(b)
         cycle = conn.execute("SELECT status FROM monthly_cycles WHERE bill_id=? AND year=? AND month=?",
                              (b['id'], year, month)).fetchone()
+        # Tek seferlik faturaysa ve bu ay için kaydı yoksa
+        if not b.get('is_recurring', 1) and not cycle:
+            is_paid_ever = conn.execute("SELECT id FROM monthly_cycles WHERE bill_id=? AND status='odendi'", (b['id'],)).fetchone()
+            if is_paid_ever:
+                continue # Başka ayda ödenmişse gizle
+            
+            # Hiç ödenmemiş tek seferlik faturaysa, sadece içinde bulunduğumuz gerçek takvim ayında bekliyor görünsün.
+            # Geçmiş veya gelecek aylara sarkmasın.
+            current_now = datetime.now()
+            if year != current_now.year or month != current_now.month:
+                continue
+
         status = dict(cycle)['status'] if cycle else 'bekliyor'
         bill_statuses.append({'name': b['name'], 'amount': b['amount'], 'status': status,
                               'subscriber_no': b.get('subscriber_no', '')})
@@ -1217,14 +1237,13 @@ def raporlar():
         else:
             msg += "_Bu döneme ait ödeme yok._\n"
             
-        msg += f"\n💰 *DÖNEM TOPLAMI:* {format_para(total_spent)} ₺\n"
+        msg += f"\n💰 *DÖNEMİN FATURA TOPLAMI:* {format_para(period_total_spent)} ₺\n"
         msg += "-----------------------------------\n"
-        msg += f"👤 *Fahri:* {format_para(fahri_paid)} ₺ | 👤 *Metin:* {format_para(metin_paid)} ₺\n"
         
         if cash_payments:
-            msg += "\n*💸 BU AY CEPTEN ÇIKAN TOPLAM*\n"
-            c_total = sum(p['amount'] for p in cash_payments)
-            msg += f"Bu ay toplam *{format_para(c_total)} ₺* ödeme yapıldı.\n"
+            msg += "\n*💸 BU AY CEPTEN ÇIKAN (KASA)*\n"
+            msg += f"Kasa Çıkışı: *{format_para(cash_total_spent)} ₺*\n"
+            msg += f"👤 *Fahri:* {format_para(cash_fahri_paid)} ₺ | 👤 *Metin:* {format_para(cash_metin_paid)} ₺\n"
         
         if metin_total_debt > 0:
             msg += f"⚠️ *Metin'in Kalan Borcu:* {format_para(metin_total_debt)} ₺\n"
@@ -1257,23 +1276,27 @@ def raporlar():
     </form>
     <div class="row g-2 mb-4">
         <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--primary);">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Toplam Harcama</div>
-            <div style="font-size:1.5rem;font-weight:700;color:var(--primary);">{{ total_spent|para }} ₺</div>
+            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Kasa Çıkışı (Bu Ay)</div>
+            <div style="font-size:1.5rem;font-weight:700;color:var(--primary);">{{ cash_total_spent|para }} ₺</div>
         </div></div>
-        <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--danger);">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Metin Borcu</div>
-            <div style="font-size:1.5rem;font-weight:700;color:var(--danger);">{{ metin_total_debt|para }} ₺</div>
+        <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--info);">
+            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Dönemin Faturaları</div>
+            <div style="font-size:1.5rem;font-weight:700;color:var(--info);">{{ period_total_spent|para }} ₺</div>
         </div></div>
         <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid #6366f1;">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Fahri &#214;dedi</div>
-            <div style="font-size:1.4rem;font-weight:700;color:#6366f1;">{{ fahri_paid|para }} ₺</div>
+            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Fahri Ödedi (Kasa)</div>
+            <div style="font-size:1.4rem;font-weight:700;color:#6366f1;">{{ cash_fahri_paid|para }} ₺</div>
         </div></div>
         <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--success);">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Metin &#214;dedi</div>
-            <div style="font-size:1.4rem;font-weight:700;color:var(--success);">{{ metin_paid|para }} ₺</div>
+            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Metin Ödedi (Kasa)</div>
+            <div style="font-size:1.4rem;font-weight:700;color:var(--success);">{{ cash_metin_paid|para }} ₺</div>
         </div></div>
     </div>
-    <div class="card p-3 mb-4">
+    
+    <div class="card p-4 mb-4 text-center shadow-sm border-0" style="background: linear-gradient(135deg, #fef2f2, #fecaca);">
+        <div style="font-size:0.8rem;color:var(--danger);font-weight:700;text-transform:uppercase;">Metin'in Güncel Toplam Borcu</div>
+        <div style="font-size:2rem;font-weight:800;color:var(--danger);">{{ metin_total_debt|para }} ₺</div>
+    </div>    <div class="card p-3 mb-4">
         <div class="section-title">Son 6 Ay Trendi</div>
         <canvas id="trendChart" height="150"></canvas>
     </div>
@@ -1379,7 +1402,8 @@ def raporlar():
     TMPL = TMPL.replace('TREND_DATA_PLACEHOLDER', _json.dumps(trend_data))
 
     return render_template_string(TMPL, year=year, month=month, month_names=month_names,
-        total_spent=total_spent, fahri_paid=fahri_paid, metin_paid=metin_paid,
+        cash_total_spent=cash_total_spent, period_total_spent=period_total_spent, 
+        cash_fahri_paid=cash_fahri_paid, cash_metin_paid=cash_metin_paid,
         metin_total_debt=metin_total_debt, category_totals=category_totals,
         card_totals=card_totals, bill_statuses=bill_statuses,
         period_payments=period_payments, cash_payments=cash_payments)
