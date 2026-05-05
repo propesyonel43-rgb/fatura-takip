@@ -259,6 +259,7 @@ def init_db():
     try:
         if DATABASE_URL:
             conn.execute("CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, bill_id INTEGER NOT NULL, log_date TEXT NOT NULL, time_slot INTEGER NOT NULL, UNIQUE(bill_id, log_date, time_slot))")
+            conn.execute("ALTER TABLE debts ALTER COLUMN payment_id DROP NOT NULL")
         else:
             conn.execute("CREATE TABLE IF NOT EXISTS notification_log (id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER NOT NULL, log_date TEXT NOT NULL, time_slot INTEGER NOT NULL, UNIQUE(bill_id, log_date, time_slot))")
         conn.commit()

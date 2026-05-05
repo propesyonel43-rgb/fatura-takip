@@ -771,18 +771,22 @@ def odeme_kaydet():
             debt_amount = amount
                 
         dt = datetime.strptime(payment_date, '%Y-%m-%d')
+        # Kullanıcının seçtiği dönemi kullan, seçilmediyse ödeme tarihindeki ayı kullan
+        bill_month = int(request.form.get('bill_month', dt.month))
+        bill_year = int(request.form.get('bill_year', dt.year))
+        
         existing_cycle = conn.execute("SELECT id FROM monthly_cycles WHERE bill_id = ? AND year = ? AND month = ?",
-                                     (bill_id, dt.year, dt.month)).fetchone()
+                                     (bill_id, bill_year, bill_month)).fetchone()
         if existing_cycle:
             conn.execute("UPDATE monthly_cycles SET status = 'odendi', payment_id = ? WHERE bill_id = ? AND year = ? AND month = ?",
-                         (payment_id, bill_id, dt.year, dt.month))
+                         (payment_id, bill_id, bill_year, bill_month))
         else:
             conn.execute("INSERT INTO monthly_cycles (bill_id, year, month, status, payment_id) VALUES (?, ?, ?, 'odendi', ?)",
-                         (bill_id, dt.year, dt.month, payment_id))
+                         (bill_id, bill_year, bill_month, 'odendi', payment_id))
         
         conn.commit()
         
-        msg = f"✅ {paid_by_display} odedi: {bill['name']} - {amount}TL ({card_used})"
+        msg = f"✅ {paid_by_display} odedi: {bill['name']} ({bill_month}/{bill_year}) - {amount}TL ({card_used})"
         if debt_amount > 0 and metin and fahri:
             if paid_by_display == 'Fahri':
                 total_debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
@@ -795,6 +799,8 @@ def odeme_kaydet():
         return redirect(url_for('odeme_kaydet'))
         
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
+    month_names = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    today = datetime.now()
     conn.close()
     
     return render_template_string("""{% extends 'base.html' %}
@@ -810,6 +816,22 @@ def odeme_kaydet():
                 {% endfor %}
             </select>
         </div>
+        
+        <div class="row g-2 mb-4">
+            <div class="col-6">
+                <label class="form-label fw-bold text-secondary">Faturanın Ait Olduğu Ay</label>
+                <select name="bill_month" class="form-select form-select-lg">
+                    {% for m in range(1, 13) %}
+                    <option value="{{ m }}" {% if m == today.month %}selected{% endif %}>{{ month_names[m] }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-6">
+                <label class="form-label fw-bold text-secondary">Fatura Yılı</label>
+                <input type="number" name="bill_year" class="form-control form-control-lg" value="{{ today.year }}">
+            </div>
+        </div>
+
         <div class="mb-4">
             <label class="form-label fw-bold text-secondary">Tutar (TL)</label>
             <div class="input-group input-group-lg">
@@ -847,7 +869,7 @@ def odeme_kaydet():
         </div>
         
         <div class="mb-4">
-            <label class="form-label fw-bold text-secondary">Ödeme Tarihi</label>
+            <label class="form-label fw-bold text-secondary">Ödeme Tarihi (Bugün)</label>
             <input type="date" name="payment_date" id="payment_date" class="form-control form-control-lg" required>
         </div>
         <div class="mb-4">
@@ -871,7 +893,7 @@ def odeme_kaydet():
         }
     </script>
     {% endblock %}
-    """, bills=bills)
+    """, bills=bills, today=today, month_names=month_names)
 
 @app.route('/borclar', methods=['GET', 'POST'])
 @login_required
@@ -917,6 +939,23 @@ def borclar():
     return render_template_string("""{% extends 'base.html' %}
     {% block content %}
     <h3 class="mb-4">Borç Takibi</h3>
+    
+    <!-- Manuel Borç Ekleme -->
+    <div class="card p-3 mb-4 border-0 shadow-sm bg-light">
+        <h6 class="fw-bold mb-2">➕ Manuel Borç Ekle</h6>
+        <form action="{{ url_for('manuel_borc_ekle') }}" method="POST" class="row g-2">
+            <div class="col-8">
+                <input type="text" name="reason" class="form-control" placeholder="Borç Nedeni (örn: Yemek, Market)" required>
+            </div>
+            <div class="col-4">
+                <input type="number" step="0.01" name="amount" class="form-control" placeholder="Tutar" required>
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-primary w-100 btn-sm fw-bold">Borç Yaz</button>
+            </div>
+        </form>
+    </div>
+
     <div class="card p-4 mb-4 text-center bg-danger text-white shadow-lg border-0" style="background: linear-gradient(135deg, #dc3545, #b02a37);">
         <h5 class="opacity-75">Metin'in Toplam Borcu</h5>
         <div class="dashboard-debt" style="font-size: 3.5rem;">{{ total }} TL</div>
@@ -927,8 +966,8 @@ def borclar():
         {% for d in debts %}
         <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center p-3 border-start border-4 border-danger">
             <div>
-                <h5 class="mb-1 fw-bold">{{ d.bill_name }}</h5>
-                <small class="text-muted d-block mb-1">Ödeme Tarihi: {{ d.payment_date }}</small>
+                <h5 class="mb-1 fw-bold">{{ d.bill_name if d.bill_name else 'Manuel Borç' }}</h5>
+                <small class="text-muted d-block mb-1">{{ d.payment_date if d.payment_date else 'Özel Kayıt' }}</small>
                 <div class="fw-bold fs-5 text-danger">{{ d.amount }} TL</div>
             </div>
             <form method="POST" onsubmit="return confirm('Bu borcu ödendi olarak işaretlemek istiyor musunuz? Geri alınamaz!');">
@@ -946,6 +985,34 @@ def borclar():
     </div>
     {% endblock %}
     """, debts=debts, total=total)
+
+@app.route('/manuel_borc_ekle', methods=['POST'])
+@login_required
+def manuel_borc_ekle():
+    amount = float(request.form.get('amount'))
+    reason = request.form.get('reason')
+    
+    conn = database.get_db_connection()
+    metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
+    fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
+    
+    if metin and fahri:
+        # payment_id=0 veya NULL (Postgres'te esnettik)
+        conn.execute('''
+            INSERT INTO debts (payment_id, debtor_user_id, creditor_user_id, amount, is_paid)
+            VALUES (?, ?, ?, ?, 0)
+        ''', (0, metin['id'], fahri['id'], amount))
+        conn.commit()
+        
+        total_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
+        total = total_row['t'] or 0
+        
+        msg = f"💸 *MANUEL BORÇ KAYDI*\nMetin, Fahri sana bir borç yazdı.\n*Neden:* {reason}\n*Tutar:* {amount} TL\n*Toplam Borcun:* {total} TL"
+        notifier.notify_all(msg)
+        flash("Manuel borç eklendi.", "success")
+        
+    conn.close()
+    return redirect(url_for('borclar'))
 
 @app.route('/takvim')
 @login_required
