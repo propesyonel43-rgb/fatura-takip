@@ -1125,6 +1125,7 @@ def raporlar():
     month = int(request.args.get('month', datetime.now().month))
     month_names = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
 
+    conn = database.get_db_connection()
     start_date = f"{year}-{month:02d}-01"
     end_date   = f"{year}-{month:02d}-31"
 
