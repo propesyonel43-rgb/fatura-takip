@@ -85,12 +85,79 @@ def check_bills_and_notify():
 
     conn.close()
     
+    # KARTLARI KONTROL ET
+    try:
+        check_cards_and_notify()
+    except Exception as e:
+        print(f"[Kart Bildirim Hata]: {e}")
+        
     # AY SONU ÖZETİ: Her ayın son günü saat 21:00'de genel rapor atar
     import calendar
     if now.hour == 21 and now.day == calendar.monthrange(now.year, now.month)[1]:
         send_monthly_summary(now.year, now.month)
 
     print(f"[Cron] {now.strftime('%d.%m.%Y %H:%M')} TR saatiyle kontrol tamamlandı.")
+
+
+def check_cards_and_notify():
+    now = datetime.now(TURKEY_TZ)
+    current_slot = now.hour
+    
+    # Sadece sabah 10 slotunda kart kontrolü yapalım (günde 1 kez yeterli)
+    if current_slot != 10:
+        return
+
+    today_str = now.strftime('%Y-%m-%d')
+    conn = database.get_db_connection()
+    cards = conn.execute("SELECT * FROM cards WHERE active = 1").fetchall()
+
+    for c in cards:
+        card = dict(c) if not isinstance(c, dict) else c
+        card_id = card['id']
+        balance = card['current_balance']
+        
+        notify_msg = None
+        
+        # 1. Son Ödeme Günü Hatırlatması (Kredi Kartı için)
+        if card['type'] == 'Kredi Kartı' and card['due_day'] == now.day:
+            notify_msg = f"💳 Abi *{card['name']}* kartının son ödeme günü gelmiş, bir kontrol et istersen. (Bakiye: {format_para(balance)} TL)"
+        
+        # 2. Periyodik Hatırlatma (Eksi bakiye varsa ve 10 gündür mesaj gitmediyse)
+        if not notify_msg and balance < 0:
+            # En son ne zaman mesaj gitmiş?
+            last_log = conn.execute(
+                "SELECT log_date FROM card_notification_log WHERE card_id = ? ORDER BY log_date DESC LIMIT 1",
+                (card_id,)
+            ).fetchone()
+            
+            should_notify_periodic = False
+            if not last_log:
+                should_notify_periodic = True
+            else:
+                last_date_str = last_log['log_date'] if isinstance(last_log, dict) else last_log[0]
+                last_date = datetime.strptime(last_date_str, '%Y-%m-%d').replace(tzinfo=TURKEY_TZ)
+                if (now - last_date).days >= 10:
+                    should_notify_periodic = True
+            
+            if should_notify_periodic:
+                if card['type'] == 'Kredi Kartı':
+                    notify_msg = f"⚠️ Hatırlatma: *{card['name']}* kredi kartında {format_para(balance)} TL borç görünüyor."
+                else:
+                    notify_msg = f"ℹ️ Hatırlatma: *{card['name']}* eksi hesap bakiyesi: {format_para(balance)} TL."
+
+        if notify_msg:
+            notifier.notify_all(notify_msg)
+            # Logla (Bugün mesaj gitti)
+            try:
+                conn.execute(
+                    "INSERT INTO card_notification_log (card_id, log_date) VALUES (?, ?) ON CONFLICT(card_id, log_date) DO NOTHING",
+                    (card_id, today_str)
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"[Kart Log Hatası]: {e}")
+
+    conn.close()
 
 
 def format_para(value):

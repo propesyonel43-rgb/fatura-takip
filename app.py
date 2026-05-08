@@ -201,6 +201,9 @@ BASE_TEMPLATE = """
         <a href="{{ url_for('borclar') }}" class="nav-link {% if request.endpoint == 'borclar' %}active{% endif %}">
             <span class="nav-icon">🤝</span> Borçlar
         </a>
+        <a href="{{ url_for('kartlar') }}" class="nav-link {% if request.endpoint in ['kartlar', 'kart_detay'] %}active{% endif %}">
+            <span class="nav-icon">💳</span> Kartlar
+        </a>
         <a href="{{ url_for('raporlar') }}" class="nav-link {% if request.endpoint == 'raporlar' %}active{% endif %}">
             <span class="nav-icon">📊</span> Rapor
         </a>
@@ -1490,6 +1493,296 @@ def ayarlar():
     </form>
     {% endblock %}
     """, other_user=other_user, other_user_name=other_user_name)
+
+@app.route('/kartlar', methods=['GET', 'POST'])
+@login_required
+def kartlar():
+    conn = database.get_db_connection()
+    if request.method == 'POST':
+        if 'delete_id' in request.form:
+            conn.execute("UPDATE cards SET active = 0 WHERE id = ?", (request.form.get('delete_id'),))
+            flash("Kart silindi.", "success")
+        else:
+            name = request.form.get('name', '').strip()
+            owner = request.form.get('owner', 'Fahri')
+            card_type = request.form.get('type')
+            due_day = request.form.get('due_day')
+            due_day = int(due_day) if due_day else None
+            current_balance = float(request.form.get('current_balance') or 0)
+
+            if not name:
+                flash("Kart adı boş olamaz.", "danger")
+            else:
+                conn.execute('''
+                    INSERT INTO cards (name, owner, type, due_day, current_balance, active)
+                    VALUES (?, ?, ?, ?, ?, 1)
+                ''', (name, owner, card_type, due_day, current_balance))
+                flash("Kart/Eksi Hesap başarıyla eklendi.", "success")
+        conn.commit()
+        return redirect(url_for('kartlar'))
+        
+    cards = conn.execute("SELECT * FROM cards WHERE active = 1 ORDER BY type DESC, name ASC").fetchall()
+    conn.close()
+    
+    return render_template_string("""{% extends 'base.html' %}
+    {% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <span class="page-title">💳 Kartlar & Eksi Hesaplar</span>
+        <button class="btn btn-primary px-4 fw-bold shadow-sm" data-bs-toggle="modal" data-bs-target="#addCardModal">+ Ekle</button>
+    </div>
+    
+    <div class="section-title">Kredi Kartları</div>
+    <div class="row g-2 mb-4">
+        {% set cc_count = 0 %}
+        {% for c in cards if c.type == 'Kredi Kartı' %}
+        {% set cc_count = cc_count + 1 %}
+        <div class="col-12">
+            <a href="{{ url_for('kart_detay', card_id=c.id) }}" class="text-decoration-none">
+                <div class="card p-3 shadow-sm mb-0">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="fw-bold" style="color:var(--text);">{{ c.name }}</div>
+                            <div class="small text-muted">{{ c.owner }} · Son Ödeme: Ayın {{ c.due_day }}. günü</div>
+                        </div>
+                        <div class="text-end">
+                            <div style="font-weight:700; font-size:1.2rem; color:{% if c.current_balance < 0 %}var(--danger){% else %}var(--success){% endif %};">
+                                {{ c.current_balance|para }} ₺
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+        {% if cc_count == 0 %}
+        <div class="col-12"><div class="card p-3 text-center text-muted small">Henüz kredi kartı eklenmemiş.</div></div>
+        {% endif %}
+    </div>
+
+    <div class="section-title">Eksi Hesaplar / KMH</div>
+    <div class="row g-2 mb-4">
+        {% set eh_count = 0 %}
+        {% for c in cards if c.type == 'Eksi Hesap' %}
+        {% set eh_count = eh_count + 1 %}
+        <div class="col-12">
+            <a href="{{ url_for('kart_detay', card_id=c.id) }}" class="text-decoration-none">
+                <div class="card p-3 shadow-sm mb-0">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="fw-bold" style="color:var(--text);">{{ c.name }}</div>
+                            <div class="small text-muted">{{ c.owner }}</div>
+                        </div>
+                        <div class="text-end">
+                            <div style="font-weight:700; font-size:1.2rem; color:{% if c.current_balance < 0 %}var(--danger){% else %}var(--success){% endif %};">
+                                {{ c.current_balance|para }} ₺
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+        {% if eh_count == 0 %}
+        <div class="col-12"><div class="card p-3 text-center text-muted small">Henüz eksi hesap eklenmemiş.</div></div>
+        {% endif %}
+    </div>
+
+    <!-- Ekle Modal -->
+    <div class="modal fade" id="addCardModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <form method="POST">
+              <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">Yeni Kart / Hesap Ekle</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">Hesap/Kart Adı</label>
+                    <input type="text" name="name" class="form-control" placeholder="Örn: Ziraat Kredi Kartı" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">Sahibi</label>
+                    <select name="owner" class="form-select">
+                        <option value="Fahri">Fahri</option>
+                        <option value="Metin">Metin</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">Tür</label>
+                    <div class="d-flex gap-2">
+                        <input type="radio" class="btn-check" name="type" id="type_cc" value="Kredi Kartı" checked>
+                        <label class="btn btn-outline-primary flex-fill" for="type_cc">Kredi Kartı</label>
+                        <input type="radio" class="btn-check" name="type" id="type_eh" value="Eksi Hesap">
+                        <label class="btn btn-outline-primary flex-fill" for="type_eh">Eksi Hesap</label>
+                    </div>
+                </div>
+                <div class="mb-3" id="due_day_container">
+                    <label class="form-label text-secondary small fw-bold">Son Ödeme Günü (Ayın Kaçı?)</label>
+                    <input type="number" name="due_day" class="form-control" placeholder="1-31" min="1" max="31">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">Güncel Bakiye (Eksi olabilir)</label>
+                    <input type="number" step="0.01" name="current_balance" class="form-control" value="0">
+                </div>
+              </div>
+              <div class="modal-footer border-0 pt-0">
+                <button type="submit" class="btn btn-primary w-100 py-3 fw-bold">Kaydet</button>
+              </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script>
+        document.querySelectorAll('input[name="type"]').forEach(radio => {
+            radio.addEventListener('change', function() {
+                const dueDayContainer = document.getElementById('due_day_container');
+                if (this.value === 'Eksi Hesap') {
+                    dueDayContainer.style.display = 'none';
+                } else {
+                    dueDayContainer.style.display = 'block';
+                }
+            });
+        });
+    </script>
+    {% endblock %}
+    """, cards=cards)
+
+@app.route('/kart/<int:card_id>')
+@login_required
+def kart_detay(card_id):
+    conn = database.get_db_connection()
+    card = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+    if not card:
+        conn.close()
+        flash("Kart bulunamadı.", "danger")
+        return redirect(url_for('kartlar'))
+    
+    transactions = conn.execute("SELECT * FROM card_transactions WHERE card_id = ? ORDER BY transaction_date DESC, id DESC", (card_id,)).fetchall()
+    conn.close()
+    
+    return render_template_string("""{% extends 'base.html' %}
+    {% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <a href="{{ url_for('kartlar') }}" class="btn btn-sm btn-outline-secondary">← Geri</a>
+        <form method="POST" action="{{ url_for('kart_sil', card_id=card.id) }}" onsubmit="return confirm('Bu kartı ve tüm geçmişini silmek istediğinize emin misiniz?');">
+            <button class="btn btn-sm btn-outline-danger">Kartı Sil</button>
+        </form>
+    </div>
+
+    <div class="card p-4 text-center shadow-sm mb-4 border-0" style="background: linear-gradient(135deg, #1e293b 0%, #334155 100%); color: white;">
+        <div class="small opacity-75 text-uppercase fw-bold mb-1">{{ card.name }} ({{ card.owner }})</div>
+        <div style="font-size: 2.4rem; font-weight: 700;" class="mb-1">{{ card.current_balance|para }} ₺</div>
+        <div class="small opacity-75">{% if card.type == 'Kredi Kartı' %}Son Ödeme: Ayın {{ card.due_day }}. günü{% else %}Eksi Hesap / KMH{% endif %}</div>
+        
+        <button class="btn btn-primary mt-4 py-2 px-4 fw-bold shadow" data-bs-toggle="modal" data-bs-target="#addTransactionModal">
+            💳 Ödeme Ekle / Bakiye Güncelle
+        </button>
+    </div>
+
+    <div class="section-title">İşlem Geçmişi</div>
+    <div class="list-group shadow-sm" style="border-radius:14px;overflow:hidden;">
+        {% for t in transactions %}
+        <div class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+                <div style="font-weight:600; font-size:0.95rem;">{{ t.note or 'İşlem' }}</div>
+                <div style="font-size:0.8rem; color:var(--text-muted);">{{ t.transaction_date }}</div>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                <div style="font-weight:700; color:{% if t.amount > 0 %}var(--success){% else %}var(--danger){% endif %};">
+                    {{ t.amount|para }} ₺
+                </div>
+                <form method="POST" action="{{ url_for('kart_islem_sil', transaction_id=t.id) }}" onsubmit="return confirm('Bu işlemi silmek istediğinize emin misiniz?');">
+                    <button class="btn btn-sm" style="background:#fee2e2;color:#991b1b;border:none;border-radius:8px;padding:4px 8px;">✕</button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <div class="list-group-item text-center text-muted py-4 small">Henüz işlem kaydı yok.</div>
+        {% endfor %}
+    </div>
+
+    <!-- İşlem Ekle Modal -->
+    <div class="modal fade" id="addTransactionModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <form method="POST" action="{{ url_for('kart_islem_ekle', card_id=card.id) }}">
+              <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">İşlem Ekle</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">Tutar (+ veya -)</label>
+                    <input type="number" step="0.01" name="amount" class="form-control form-control-lg" placeholder="Örn: 5000 veya -2500" required>
+                    <div class="small text-muted mt-1">Ödeme yaptıysanız <b>pozitif</b>, harcama/eksiye düşüş ise <b>negatif</b> değer girin.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">İşlem Tarihi</label>
+                    <input type="date" name="transaction_date" class="form-control" value="{{ now_str }}" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">Not</label>
+                    <input type="text" name="note" class="form-control" placeholder="Örn: Kredi Kartı Ödemesi">
+                </div>
+              </div>
+              <div class="modal-footer border-0 pt-0">
+                <button type="submit" class="btn btn-primary w-100 py-3 fw-bold">Kaydet</button>
+              </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endblock %}
+    """, card=card, transactions=transactions, now_str=datetime.now().strftime('%Y-%m-%d'))
+
+@app.route('/kart/<int:card_id>/islem', methods=['POST'])
+@login_required
+def kart_islem_ekle(card_id):
+    amount = float(request.form.get('amount') or 0)
+    transaction_date = request.form.get('transaction_date')
+    note = request.form.get('note', '')
+    
+    conn = database.get_db_connection()
+    # İşlemi kaydet
+    conn.execute("INSERT INTO card_transactions (card_id, amount, transaction_date, note) VALUES (?, ?, ?, ?)",
+                 (card_id, amount, transaction_date, note))
+    # Bakiyeyi güncelle
+    conn.execute("UPDATE cards SET current_balance = current_balance + ? WHERE id = ?", (amount, card_id))
+    conn.commit()
+    conn.close()
+    flash("İşlem başarıyla eklendi.", "success")
+    return redirect(url_for('kart_detay', card_id=card_id))
+
+@app.route('/kart/islem_sil/<int:transaction_id>', methods=['POST'])
+@login_required
+def kart_islem_sil(transaction_id):
+    conn = database.get_db_connection()
+    t = conn.execute("SELECT * FROM card_transactions WHERE id = ?", (transaction_id,)).fetchone()
+    if t:
+        card_id = t['card_id']
+        amount = t['amount']
+        # Bakiyeyi geri al
+        conn.execute("UPDATE cards SET current_balance = current_balance - ? WHERE id = ?", (amount, card_id))
+        # İşlemi sil
+        conn.execute("DELETE FROM card_transactions WHERE id = ?", (transaction_id,))
+        conn.commit()
+        flash("İşlem silindi ve bakiye geri alındı.", "success")
+        conn.close()
+        return redirect(url_for('kart_detay', card_id=card_id))
+    conn.close()
+    return redirect(url_for('kartlar'))
+
+@app.route('/kart_sil/<int:card_id>', methods=['POST'])
+@login_required
+def kart_sil(card_id):
+    conn = database.get_db_connection()
+    conn.execute("UPDATE cards SET active = 0 WHERE id = ?", (card_id,))
+    conn.commit()
+    conn.close()
+    flash("Kart silindi.", "success")
+    return redirect(url_for('kartlar'))
 
 @app.errorhandler(500)
 def internal_error(e):

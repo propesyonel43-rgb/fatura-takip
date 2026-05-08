@@ -155,6 +155,29 @@ CREATE TABLE IF NOT EXISTS monthly_cycles (
     FOREIGN KEY (bill_id) REFERENCES bills (id),
     FOREIGN KEY (payment_id) REFERENCES payments (id)
 );
+CREATE TABLE IF NOT EXISTS cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    type TEXT NOT NULL,
+    due_day INTEGER,
+    current_balance REAL DEFAULT 0,
+    active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS card_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    transaction_date TEXT NOT NULL,
+    note TEXT,
+    FOREIGN KEY (card_id) REFERENCES cards (id)
+);
+CREATE TABLE IF NOT EXISTS card_notification_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id INTEGER NOT NULL,
+    log_date TEXT NOT NULL,
+    UNIQUE(card_id, log_date)
+);
 """
 
 _PG_SCHEMA = """
@@ -223,6 +246,28 @@ CREATE TABLE IF NOT EXISTS monthly_cycles (
     status TEXT NOT NULL,
     payment_id INTEGER
 );
+CREATE TABLE IF NOT EXISTS cards (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    type TEXT NOT NULL,
+    due_day INTEGER,
+    current_balance REAL DEFAULT 0,
+    active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS card_transactions (
+    id SERIAL PRIMARY KEY,
+    card_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    transaction_date TEXT NOT NULL,
+    note TEXT
+);
+CREATE TABLE IF NOT EXISTS card_notification_log (
+    id SERIAL PRIMARY KEY,
+    card_id INTEGER NOT NULL,
+    log_date TEXT NOT NULL,
+    UNIQUE(card_id, log_date)
+);
 """
 
 
@@ -255,7 +300,7 @@ def init_db():
     except Exception:
         try: conn.rollback()
         except: pass
-        
+
     try:
         if DATABASE_URL:
             conn.execute("CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, bill_id INTEGER NOT NULL, log_date TEXT NOT NULL, time_slot INTEGER NOT NULL, UNIQUE(bill_id, log_date, time_slot))")
@@ -266,6 +311,22 @@ def init_db():
     except Exception:
         try: conn.rollback()
         except: pass
+
+    # New card tables migration
+    try:
+        if DATABASE_URL:
+            conn.execute("CREATE TABLE IF NOT EXISTS cards (id SERIAL PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL, type TEXT NOT NULL, due_day INTEGER, current_balance REAL DEFAULT 0, active INTEGER DEFAULT 1)")
+            conn.execute("CREATE TABLE IF NOT EXISTS card_transactions (id SERIAL PRIMARY KEY, card_id INTEGER NOT NULL, amount REAL NOT NULL, transaction_date TEXT NOT NULL, note TEXT)")
+            conn.execute("CREATE TABLE IF NOT EXISTS card_notification_log (id SERIAL PRIMARY KEY, card_id INTEGER NOT NULL, log_date TEXT NOT NULL, UNIQUE(card_id, log_date))")
+        else:
+            conn.execute("CREATE TABLE IF NOT EXISTS cards (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, type TEXT NOT NULL, due_day INTEGER, current_balance REAL DEFAULT 0, active INTEGER DEFAULT 1)")
+            conn.execute("CREATE TABLE IF NOT EXISTS card_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER NOT NULL, amount REAL NOT NULL, transaction_date TEXT NOT NULL, note TEXT, FOREIGN KEY (card_id) REFERENCES cards (id))")
+            conn.execute("CREATE TABLE IF NOT EXISTS card_notification_log (id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER NOT NULL, log_date TEXT NOT NULL, UNIQUE(card_id, log_date))")
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+
     conn.close()
 
 
