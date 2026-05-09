@@ -1522,13 +1522,35 @@ def kartlar():
         return redirect(url_for('kartlar'))
         
     cards = conn.execute("SELECT * FROM cards WHERE active = 1 ORDER BY type DESC, name ASC").fetchall()
+    cards_list = [dict(c) for c in cards]
     conn.close()
     
+    total_cc_debt = sum(c['current_balance'] for c in cards_list if c['type'] == 'Kredi Kartı' and c['current_balance'] < 0)
+    total_eh_debt = sum(c['current_balance'] for c in cards_list if c['type'] == 'Eksi Hesap' and c['current_balance'] < 0)
+    total_debt = total_cc_debt + total_eh_debt
+
     return render_template_string("""{% extends 'base.html' %}
     {% block content %}
     <div class="d-flex justify-content-between align-items-center mb-4">
         <span class="page-title">💳 Kartlar & Eksi Hesaplar</span>
         <button class="btn btn-primary px-4 fw-bold shadow-sm" data-bs-toggle="modal" data-bs-target="#addCardModal">+ Ekle</button>
+    </div>
+
+    <div class="card p-3 shadow-sm border-0 mb-4" style="background: linear-gradient(135deg, #334155 0%, #0f172a 100%); color: white;">
+        <div class="row text-center">
+            <div class="col-4 border-end border-secondary">
+                <div class="small opacity-75 fw-bold" style="font-size:0.65rem; text-transform:uppercase;">Kart Borcu</div>
+                <div class="fw-bold" style="font-size:1.1rem; color:#fca5a5;">{{ total_cc_debt|para }} ₺</div>
+            </div>
+            <div class="col-4 border-end border-secondary">
+                <div class="small opacity-75 fw-bold" style="font-size:0.65rem; text-transform:uppercase;">Eksi Hesap</div>
+                <div class="fw-bold" style="font-size:1.1rem; color:#fca5a5;">{{ total_eh_debt|para }} ₺</div>
+            </div>
+            <div class="col-4">
+                <div class="small opacity-75 fw-bold" style="font-size:0.65rem; text-transform:uppercase;">Toplam Borç</div>
+                <div class="fw-bold" style="font-size:1.1rem; color:#f87171;">{{ total_debt|para }} ₺</div>
+            </div>
+        </div>
     </div>
     
     <div class="section-title">Kredi Kartları</div>
