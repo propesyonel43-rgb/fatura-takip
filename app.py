@@ -323,17 +323,22 @@ def dashboard():
     conn = database.get_db_connection()
     today = datetime.now()
     
-    bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
+    # Tüm aktif faturaları çek
+    all_bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
     
-    # Metin'in borcu hala arka planda hesaplansın (varsa başka yerde kullanırız)
+    # Metin'in borcu
     fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
-    
     metin_debt = 0
     if fahri and metin:
         debt_row = conn.execute("SELECT SUM(amount) as total FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-        metin_debt = debt_row['total'] or 0
-        
+        coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
+        metin_debt = (debt_row['total'] or 0) - (coll_row['total'] or 0)
+
+    # Banka Borcu Hesaplama (Dashboard için)
+    bank_debt_row = conn.execute("SELECT SUM(current_balance) as total FROM cards WHERE active = 1 AND current_balance < 0").fetchone()
+    total_bank_debt = abs(bank_debt_row['total'] or 0)
+
     payments = conn.execute('''
         SELECT p.*, b.name as bill_name, u.display_name as payer_name 
         FROM payments p 
@@ -343,17 +348,27 @@ def dashboard():
     ''').fetchall()
     
     dashboard_bills = []
-    today_day = today.day
     total_bills_amount = 0
     paid_bills_amount = 0
     
-    for b in bills:
+    for b in all_bills:
+        # Hayalet fatura kontrolü: Tek seferlik faturaysa ve geçmişte ödenmişse gösterme
+        if not b['is_recurring']:
+            # Bu fatura için herhangi bir ödeme yapılmış mı?
+            paid_ever = conn.execute("SELECT id FROM monthly_cycles WHERE bill_id = ? AND status = 'odendi'", (b['id'],)).fetchone()
+            if paid_ever:
+                # Eğer bu ay ödenmediyse (yani geçmişte ödenmiş ve bitmişse) gösterme
+                paid_this_month = conn.execute("SELECT id FROM monthly_cycles WHERE bill_id = ? AND year = ? AND month = ? AND status = 'odendi'", 
+                                              (b['id'], today.year, today.month)).fetchone()
+                if not paid_this_month:
+                    continue
+
         cycle = conn.execute("SELECT status FROM monthly_cycles WHERE bill_id = ? AND year = ? AND month = ?", (b['id'], today.year, today.month)).fetchone()
         
         total_bills_amount += b['amount']
         
         status_color = ""
-        days_left = b['due_day'] - today_day
+        days_left = b['due_day'] - today.day
         
         is_paid = cycle and cycle['status'] == 'odendi'
         if is_paid:
@@ -367,6 +382,7 @@ def dashboard():
             status_color = "light"
             
         dashboard_bills.append({
+            'id': b['id'],
             'name': b['name'],
             'amount': b['amount'],
             'color': status_color,
@@ -400,29 +416,43 @@ def dashboard():
         </div>
     </div>
 
-    <div class="hero-card mb-4" style="background: linear-gradient(135deg, #4b5563, #1f2937); padding: 15px; margin-top: -10px;">
-        <div class="d-flex justify-content-between align-items-center">
-            <div class="label" style="margin-bottom:0;">Metin'in Toplam Borcu</div>
-            <div style="font-weight:700; font-size:1.3rem;">{{ metin_debt|para }} ₺</div>
+    <div class="card mb-4 border-0 shadow-sm overflow-hidden" style="border-radius:20px; background: white;">
+        <div class="d-flex align-items-center p-3" style="background: #fef2f2;">
+            <div class="rounded-circle d-flex align-items-center justify-content-center" style="width:45px; height:45px; background: #fee2e2; color: #ef4444; font-size:1.2rem; margin-right:12px;">🏦</div>
+            <div>
+                <div class="stat-label" style="margin-bottom:0; color: #991b1b;">Bankalara Toplam Borç</div>
+                <div style="font-weight:800; font-size:1.4rem; color: #dc2626;">{{ total_bank_debt|para }} ₺</div>
+            </div>
         </div>
     </div>
 
-    <div class="section-title">Bu Ay Faturalar</div>
+    <div class="section-title">Bu Ay Faturalar (Tıkla ve Öde)</div>
     <div class="row g-2 mb-4">
         {% for b in dashboard_bills %}
         <div class="col-6">
-            <div class="bill-chip chip-{{ b.color }} position-relative">
-                {% if b.is_autopay %}<span class="badge" style="background:#6366f1;font-size:0.65rem;position:absolute;top:8px;right:8px;">OTO</span>{% endif %}
-                <div style="font-weight:600;font-size:0.9rem;">{{ b.name }}</div>
-                <div style="font-size:1.1rem;font-weight:700;">{{ b.amount|para }} ₺</div>
-                {% if b.color == 'success' %}<div style="font-size:0.72rem;">✓ Ödendi</div>
-                {% elif b.color == 'danger' %}<div style="font-size:0.72rem;">⚠ Geçti</div>
-                {% elif b.color == 'warning' %}<div style="font-size:0.72rem;">⏰ {{ b.days_left }} gün kaldı</div>
-                {% else %}<div style="font-size:0.72rem;">{{ b.days_left }} gün</div>{% endif %}
-            </div>
+            <a href="{{ url_for('odeme_kaydet', fatura_id=b.id) }}" class="text-decoration-none">
+                <div class="bill-chip chip-{{ b.color }} position-relative">
+                    {% if b.is_autopay %}<span class="badge" style="background:#6366f1;font-size:0.65rem;position:absolute;top:8px;right:8px;">OTO</span>{% endif %}
+                    <div style="font-weight:600;font-size:0.9rem;">{{ b.name }}</div>
+                    <div style="font-size:1.1rem;font-weight:700;">{{ b.amount|para }} ₺</div>
+                    {% if b.color == 'success' %}
+                        <div style="font-size:0.72rem;">✓ Ödendi</div>
+                    {% else %}
+                        {% if b.is_autopay %}
+                            <a href="{{ url_for('oto_onayla', bill_id=b.id) }}" class="btn btn-sm btn-primary py-0 px-2 mt-1" style="font-size:0.65rem; border-radius:6px;" onclick="event.stopPropagation();">Onayla</a>
+                        {% elif b.color == 'danger' %}
+                            <div style="font-size:0.72rem;">⚠ Geçti</div>
+                        {% elif b.color == 'warning' %}
+                            <div style="font-size:0.72rem;">⏰ {{ b.days_left }} gün kaldı</div>
+                        {% else %}
+                            <div style="font-size:0.72rem;">{{ b.days_left }} gün</div>
+                        {% endif %}
+                    {% endif %}
+                </div>
+            </a>
         </div>
         {% else %}
-        <div class="col-12"><div class="card p-4 text-center text-muted">Henüz fatura eklenmemiş.</div></div>
+        <div class="col-12"><div class="card p-4 text-center text-muted">Ödenecek fatura kalmadı! 🎉</div></div>
         {% endfor %}
     </div>
 
@@ -454,7 +484,75 @@ def dashboard():
     payments=payments,
     total_bills_amount=total_bills_amount,
     paid_bills_amount=paid_bills_amount,
-    remaining_bills_amount=remaining_bills_amount)
+    remaining_bills_amount=remaining_bills_amount,
+    total_bank_debt=total_bank_debt)
+
+
+@app.route('/oto_onayla/<int:bill_id>')
+@login_required
+def oto_onayla(bill_id):
+    conn = database.get_db_connection()
+    bill = conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone()
+    
+    if not bill:
+        conn.close()
+        flash("Fatura bulunamadı.", "danger")
+        return redirect(url_for('dashboard'))
+        
+    if not bill['autopay_card_name']:
+        conn.close()
+        flash("Bu faturaya tanımlı otomatik ödeme kartı yok.", "warning")
+        return redirect(url_for('dashboard'))
+        
+    # Kartı bul
+    card = conn.execute("SELECT * FROM cards WHERE name = ?", (bill['autopay_card_name'],)).fetchone()
+    if not card:
+        conn.close()
+        flash(f"'{bill['autopay_card_name']}' isimli kart bulunamadı.", "danger")
+        return redirect(url_for('dashboard'))
+        
+    today = datetime.now()
+    payment_date = today.strftime('%Y-%m-%d')
+    
+    # Ödemeyi kaydet
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO payments (bill_id, amount, payment_date, paid_by_user_id, card_used, note)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (bill_id, bill['amount'], payment_date, current_user.id, card['name'], "Otomatik ödeme onayı"))
+    
+    payment_id = cursor.lastrowid
+    
+    # Döngü kaydını güncelle veya ekle
+    cycle_row = cursor.execute("SELECT id FROM monthly_cycles WHERE bill_id = ? AND year = ? AND month = ?", 
+                          (bill_id, today.year, today.month)).fetchone()
+    if cycle_row:
+        cursor.execute("UPDATE monthly_cycles SET status = 'odendi', payment_id = ? WHERE id = ?", (payment_id, cycle_row['id']))
+    else:
+        cursor.execute("INSERT INTO monthly_cycles (bill_id, year, month, status, payment_id) VALUES (?, ?, ?, ?, ?)",
+                      (bill_id, today.year, today.month, 'odendi', payment_id))
+        
+    # Kart bakiyesini düş (Borcu artır)
+    cursor.execute("UPDATE cards SET current_balance = current_balance - ? WHERE id = ?", (bill['amount'], card['id']))
+    
+    # Borçlandırma Mantığı: Sadece kart sahibi Fahri ise Metin'e borç yaz
+    if card['owner'] == 'Fahri':
+        fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
+        metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
+        if fahri and metin:
+            # Metin'e borç yaz ( debtor=Metin, creditor=Fahri )
+            cursor.execute("INSERT INTO debts (debtor_user_id, creditor_user_id, amount, is_paid, payment_id) VALUES (?, ?, ?, ?, ?)",
+                          (metin['id'], fahri['id'], bill['amount'], 0, payment_id))
+    
+    conn.commit()
+    conn.close()
+    
+    # Bildirim
+    msg = f"✅ {bill['name']} faturası {card['name']} ({card['owner']}) ile otomatik ödendi ve onaylandı. Tutar: {bill['amount']} TL"
+    notifier.notify_all(msg)
+    
+    flash(f"{bill['name']} başarıyla onaylandı.", "success")
+    return redirect(url_for('dashboard'))
 
 @app.route('/fatura_duzenle/<int:bill_id>', methods=['GET', 'POST'])
 @login_required
@@ -469,15 +567,16 @@ def fatura_duzenle(bill_id):
         subscriber_no = request.form.get('subscriber_no', '')
         is_recurring = 1 if request.form.get('is_recurring') == 'on' else 0
         is_autopay = 1 if request.form.get('is_autopay') == 'on' else 0
+        autopay_card_name = request.form.get('autopay_card_name', '') if is_autopay else ''
         
         if name:
             conn.execute('''
                 UPDATE bills 
                 SET name=?, amount=?, due_day=?, last_payment_day=?, category=?, 
-                    is_recurring=?, is_autopay=?, subscriber_no=?
+                    is_recurring=?, is_autopay=?, subscriber_no=?, autopay_card_name=?
                 WHERE id=?
             ''', (name, float(amount_raw), due_day, last_payment_day, category, 
-                  is_recurring, is_autopay, subscriber_no, bill_id))
+                  is_recurring, is_autopay, subscriber_no, autopay_card_name, bill_id))
             conn.commit()
             flash("Fatura başarıyla güncellendi.", "success")
         else:
@@ -487,6 +586,7 @@ def fatura_duzenle(bill_id):
         
     bill = conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone()
     categories = conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
+    cards = conn.execute("SELECT * FROM cards WHERE active = 1 ORDER BY owner, name").fetchall()
     conn.close()
     
     if not bill:
@@ -533,20 +633,36 @@ def fatura_duzenle(bill_id):
             </select>
         </div>
         
-        <div class="d-flex justify-content-between mb-4 mt-2">
+        <div class="d-flex flex-column gap-3 mb-4 mt-2">
             <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="is_recurring" id="rec2" {% if bill.is_recurring %}checked{% endif %}>
                 <label class="form-check-label fw-bold" for="rec2">Her Ay Tekrarla</label>
             </div>
             <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="is_autopay" id="auto2" {% if bill.is_autopay %}checked{% endif %}>
+                <input class="form-check-input" type="checkbox" name="is_autopay" id="auto2" {% if bill.is_autopay %}checked{% endif %} onchange="toggleAutopayCardEdit(this)">
                 <label class="form-check-label fw-bold" for="auto2">Otomatik Ödeniyor</label>
             </div>
         </div>
+
+        <div class="mb-4" id="autopay_card_container_edit" style="{% if not bill.is_autopay %}display:none;{% endif %}">
+            <label class="form-label text-secondary fw-bold">Hangi Karttan Çekilecek?</label>
+            <select name="autopay_card_name" class="form-select">
+                <option value="">Kart Seçin...</option>
+                {% for c in cards %}
+                <option value="{{ c.name }} ({{ c.owner }})" {% if bill.autopay_card_name == (c.name + ' (' + c.owner + ')') %}selected{% endif %}>{{ c.name }} ({{ c.owner }})</option>
+                {% endfor %}
+            </select>
+        </div>
+
         <button type="submit" class="btn btn-primary btn-lg w-100 py-3 fw-bold">Güncelle</button>
     </form>
+    <script>
+        function toggleAutopayCardEdit(el) {
+            document.getElementById('autopay_card_container_edit').style.display = el.checked ? 'block' : 'none';
+        }
+    </script>
     {% endblock %}
-    """, bill=bill, categories=categories)
+    """, bill=bill, categories=categories, cards=cards)
 
 @app.route('/faturalar', methods=['GET', 'POST'])
 @login_required
@@ -565,21 +681,32 @@ def faturalar():
             subscriber_no = request.form.get('subscriber_no', '')
             is_recurring = 1 if request.form.get('is_recurring') == 'on' else 0
             is_autopay = 1 if request.form.get('is_autopay') == 'on' else 0
+            autopay_card_name = request.form.get('autopay_card_name', '') if is_autopay else ''
 
             if not name:
                 flash("Fatura adı boş olamaz.", "danger")
             else:
                 amount = float(amount_raw)
                 conn.execute('''
-                    INSERT INTO bills (name, owner, amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (name, "Ortak", amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no))
+                    INSERT INTO bills (name, owner, amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no, autopay_card_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (name, "Ortak", amount, due_day, last_payment_day, category, is_recurring, is_autopay, subscriber_no, autopay_card_name))
                 flash("Fatura başarıyla eklendi.", "success")
         conn.commit()
         return redirect(url_for('faturalar'))
         
-    bills = conn.execute("SELECT * FROM bills WHERE active = 1 ORDER BY id DESC").fetchall()
+    bills_raw = conn.execute("SELECT * FROM bills WHERE active = 1 ORDER BY category, name").fetchall()
     categories = conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
+    cards = conn.execute("SELECT * FROM cards WHERE active = 1 ORDER BY owner, name").fetchall()
+    
+    # Gruplandırma
+    bills_grouped = {}
+    for b in bills_raw:
+        cat = b['category']
+        if cat not in bills_grouped:
+            bills_grouped[cat] = []
+        bills_grouped[cat].append(b)
+
     conn.close()
     
     return render_template_string("""{% extends 'base.html' %}
@@ -592,16 +719,17 @@ def faturalar():
         </div>
     </div>
     
-    {% for b in bills %}
+    {% for cat, items in bills_grouped.items() %}
+    <div class="section-title mt-4 mb-2" style="font-size:1.1rem; color:var(--primary); border-bottom:2px solid #e2e8f0; padding-bottom:5px;">{{ cat }}</div>
+    {% for b in items %}
     <div class="card p-3 shadow-sm mb-3">
         <div class="d-flex justify-content-between align-items-start">
             <div>
                 <h5 class="mb-0">{{ b.name }}</h5>
                 {% if b.subscriber_no %}<div style="font-size:0.78rem;color:var(--text-muted);">Abone No: <strong>{{ b.subscriber_no }}</strong></div>{% endif %}
                 <div class="mt-1">
-                    <span class="badge bg-secondary">{{ b.category }}</span>
-                    {% if b.is_autopay %}<span class="badge" style="background:#6366f1;">Otomatik</span>{% endif %}
-                    {% if b.is_recurring %}<span class="badge bg-light text-muted">Tekrarlı</span>{% endif %}
+                    {% if b.is_autopay %}<span class="badge" style="background:#6366f1;">Otomatik: {{ b.autopay_card_name }}</span>{% endif %}
+                    {% if b.is_recurring %}<span class="badge bg-light text-muted">Tekrarlı</span>{% else %}<span class="badge bg-warning text-dark">Tek Seferlik</span>{% endif %}
                 </div>
             </div>
             <div class="d-inline-flex gap-2">
@@ -620,6 +748,7 @@ def faturalar():
             <div style="font-weight:700;font-size:1.4rem;color:var(--primary);">{{ b.amount|para }} ₺</div>
         </div>
     </div>
+    {% endfor %}
     {% else %}
     <div class="text-center text-muted p-5 bg-white rounded shadow-sm">
         <h4>Henüz fatura yok.</h4>
@@ -660,8 +789,17 @@ def faturalar():
                   <label class="form-check-label" for="is_recurring">Her ay tekrarlar</label>
                 </div>
                 <div class="form-check form-switch fs-5">
-                  <input class="form-check-input" type="checkbox" name="is_autopay" id="is_autopay">
+                  <input class="form-check-input" type="checkbox" name="is_autopay" id="is_autopay" onchange="toggleAutopayCard(this)">
                   <label class="form-check-label text-danger" for="is_autopay">Otomatik Ödemede</label>
+                </div>
+                <div class="mb-3 mt-2" id="autopay_card_container" style="display:none;">
+                    <label class="form-label text-secondary fw-bold small">Hangi Karttan Çekilecek?</label>
+                    <select name="autopay_card_name" class="form-select">
+                        <option value="">Kart Seçin...</option>
+                        {% for c in cards %}
+                        <option value="{{ c.name }} ({{ c.owner }})">{{ c.name }} ({{ c.owner }})</option>
+                        {% endfor %}
+                    </select>
                 </div>
               </div>
               <div class="modal-footer border-0 pt-0 mt-3">
@@ -671,8 +809,13 @@ def faturalar():
         </div>
       </div>
     </div>
+    <script>
+        function toggleAutopayCard(el) {
+            document.getElementById('autopay_card_container').style.display = el.checked ? 'block' : 'none';
+        }
+    </script>
     {% endblock %}
-    """, bills=bills, categories=categories)
+    """, bills_grouped=bills_grouped, categories=categories, cards=cards)
 
 @app.route('/delete_payment/<int:payment_id>', methods=['POST'])
 @login_required
@@ -698,6 +841,13 @@ def kategoriler():
         if 'delete_id' in request.form:
             conn.execute("DELETE FROM categories WHERE id = ?", (request.form.get('delete_id'),))
             flash("Kategori silindi.", "success")
+        elif 'edit_id' in request.form:
+            new_name = request.form.get('name')
+            old_name_row = conn.execute("SELECT name FROM categories WHERE id = ?", (request.form.get('edit_id'),)).fetchone()
+            if old_name_row and new_name:
+                conn.execute("UPDATE categories SET name = ? WHERE id = ?", (new_name, request.form.get('edit_id')))
+                conn.execute("UPDATE bills SET category = ? WHERE category = ?", (new_name, old_name_row['name']))
+                flash("Kategori ve bağlı faturalar güncellendi.", "success")
         else:
             name = request.form.get('name')
             try:
@@ -730,10 +880,34 @@ def kategoriler():
         {% for cat in categories %}
         <div class="list-group-item d-flex justify-content-between align-items-center p-3">
             <span class="fs-5">{{ cat.name }}</span>
-            <form method="POST" onsubmit="return confirm('Silmek istediğinize emin misiniz?');">
-                <input type="hidden" name="delete_id" value="{{ cat.id }}">
-                <button class="btn btn-sm btn-outline-danger">Sil</button>
-            </form>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editCat{{ cat.id }}">Düzenle</button>
+                <form method="POST" onsubmit="return confirm('Silmek istediğinize emin misiniz?');" style="margin:0;">
+                    <input type="hidden" name="delete_id" value="{{ cat.id }}">
+                    <button class="btn btn-sm btn-outline-danger">Sil</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Düzenle Modal -->
+        <div class="modal fade" id="editCat{{ cat.id }}" tabindex="-1">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+              <form method="POST">
+                  <input type="hidden" name="edit_id" value="{{ cat.id }}">
+                  <div class="modal-header border-0">
+                    <h5 class="modal-title fw-bold">Kategori Düzenle</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                  </div>
+                  <div class="modal-body">
+                    <input type="text" name="name" class="form-control form-control-lg" value="{{ cat.name }}" required>
+                  </div>
+                  <div class="modal-footer border-0">
+                    <button type="submit" class="btn btn-primary w-100 py-3 fw-bold">Güncelle</button>
+                  </div>
+              </form>
+            </div>
+          </div>
         </div>
         {% endfor %}
     </div>
@@ -747,21 +921,32 @@ def odeme_kaydet():
     if request.method == 'POST':
         bill_id = request.form.get('bill_id')
         amount = float(request.form.get('amount'))
-        paid_by_display = request.form.get('paid_by')
-        card_used = request.form.get('card_used')
+        card_id = request.form.get('card_id')
         payment_date = request.form.get('payment_date')
         notes = request.form.get('notes', '')
         
-        payer_row = conn.execute("SELECT * FROM users WHERE display_name = ?", (paid_by_display,)).fetchone()
+        card_row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
         bill_row  = conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone()
 
-        if not payer_row or not bill_row:
+        if not card_row or not bill_row:
             conn.close()
-            flash("Hata: Kullanıcı veya fatura bulunamadı.", "danger")
+            flash("Hata: Kart veya fatura bulunamadı.", "danger")
             return redirect(url_for('odeme_kaydet'))
 
-        payer = dict(payer_row)
+        card = dict(card_row)
         bill  = dict(bill_row)
+        card_used = f"{card['name']} ({card['owner']})"
+        
+        fahri = conn.execute("SELECT * FROM users WHERE display_name = 'Fahri'").fetchone()
+        metin = conn.execute("SELECT * FROM users WHERE display_name = 'Metin'").fetchone()
+        
+        # Payer is determined by card owner
+        if card['owner'] == 'Fahri':
+            payer = fahri
+        elif card['owner'] == 'Metin':
+            payer = metin
+        else:
+            payer = fahri # Default to Fahri for shared cards
         
         cursor = conn.cursor()
         cursor.execute('''
@@ -770,26 +955,15 @@ def odeme_kaydet():
         ''', (bill_id, payer['id'], "Ortak", amount, card_used, payment_date, notes))
         payment_id = cursor.lastrowid
         
-        debt_amount = amount
-        
-        metin = conn.execute("SELECT * FROM users WHERE display_name = 'Metin'").fetchone()
-        fahri = conn.execute("SELECT * FROM users WHERE display_name = 'Fahri'").fetchone()
-        
-        if paid_by_display == 'Fahri' and metin:
+        debt_amount = 0
+        if card['owner'] == 'Fahri' and metin:
             cursor.execute('''
                 INSERT INTO debts (payment_id, debtor_user_id, creditor_user_id, amount, is_paid)
                 VALUES (?, ?, ?, ?, 0)
-            ''', (payment_id, metin['id'], payer['id'], amount))
-            debt_amount = amount
-        elif paid_by_display == 'Metin' and fahri:
-            cursor.execute('''
-                INSERT INTO debts (payment_id, debtor_user_id, creditor_user_id, amount, is_paid)
-                VALUES (?, ?, ?, ?, 0)
-            ''', (payment_id, fahri['id'], payer['id'], amount))
+            ''', (payment_id, metin['id'], fahri['id'], amount))
             debt_amount = amount
                 
         dt = datetime.strptime(payment_date, '%Y-%m-%d')
-        # Kullanıcının seçtiği dönemi kullan, seçilmediyse ödeme tarihindeki ayı kullan
         bill_month = int(request.form.get('bill_month', dt.month))
         bill_year = int(request.form.get('bill_year', dt.year))
         
@@ -804,19 +978,22 @@ def odeme_kaydet():
         
         conn.commit()
         
-        msg = f"✅ *{paid_by_display}* odedi: *{bill['name']}* ({bill['category']})\n📅 *Dönem:* {bill_month}/{bill_year}\n💰 *Tutar:* {amount}TL\n💳 *Kart:* {card_used}"
+        msg = f"✅ *{card_used}* ile ödendi: *{bill['name']}* ({bill['category']})\n📅 *Dönem:* {bill_month}/{bill_year}\n💰 *Tutar:* {amount}TL"
+        
         if debt_amount > 0 and metin and fahri:
-            if paid_by_display == 'Fahri':
-                total_debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-                total_debt = total_debt_row['t'] or 0
-                msg += f"\n💸 Yeni borc: +{amount}TL | Metin'in Toplam Borcu: {total_debt}TL"
+            total_debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
+            coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
+            total_debt = (total_debt_row['t'] or 0) - (coll_row['total'] or 0)
+            msg += f"\n💸 Metin'e borç yazıldı: +{amount}TL\n🤝 Güncel Toplam Borç: {format_para(total_debt)} TL"
             
         notifier.notify_all(msg)
         
         flash("Ödeme başarıyla kaydedildi ve WhatsApp bildirimi gönderildi.", "success")
         return redirect(url_for('odeme_kaydet'))
         
+    fatura_id = request.args.get('fatura_id')
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
+    cards = conn.execute("SELECT * FROM cards WHERE active = 1 ORDER BY owner, name").fetchall()
     month_names = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
     today = datetime.now()
     conn.close()
@@ -830,7 +1007,7 @@ def odeme_kaydet():
             <select name="bill_id" id="bill_id" class="form-select form-select-lg" required onchange="updateAmount()">
                 <option value="">Fatura Seçiniz...</option>
                 {% for b in bills %}
-                <option value="{{ b.id }}" data-amount="{{ b.amount }}">{{ b.name }}</option>
+                <option value="{{ b.id }}" data-amount="{{ b.amount }}" {% if fatura_id|string == b.id|string %}selected{% endif %}>{{ b.name }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -857,33 +1034,16 @@ def odeme_kaydet():
                 <input type="number" step="0.01" name="amount" id="amount" class="form-control" required>
             </div>
         </div>
-        <div class="mb-4">
-            <label class="form-label fw-bold text-secondary">Kim Ödedi?</label>
-            <div class="d-flex gap-2">
-                <input type="radio" class="btn-check btn-check-custom" name="paid_by" id="pb_fahri" value="Fahri" required>
-                <label class="btn btn-outline-primary flex-fill" for="pb_fahri">Fahri</label>
 
-                <input type="radio" class="btn-check btn-check-custom" name="paid_by" id="pb_metin" value="Metin" required>
-                <label class="btn btn-outline-primary flex-fill" for="pb_metin">Metin</label>
-            </div>
-            <div class="form-text mt-2 text-danger">Seçilen kişi karşı tarafa otomatik borç yazdıracaktır.</div>
-        </div>
         <div class="mb-4">
             <label class="form-label fw-bold text-secondary">Hangi Kart Kullanıldı?</label>
-            <div class="row g-2">
-                <div class="col-4">
-                    <input type="radio" class="btn-check btn-check-custom" name="card_used" id="card_fahri" value="Fahri Kartı" required>
-                    <label class="btn btn-outline-secondary w-100" for="card_fahri">Fahri</label>
-                </div>
-                <div class="col-4">
-                    <input type="radio" class="btn-check btn-check-custom" name="card_used" id="card_metin" value="Metin Kartı" required>
-                    <label class="btn btn-outline-secondary w-100" for="card_metin">Metin</label>
-                </div>
-                <div class="col-4">
-                    <input type="radio" class="btn-check btn-check-custom" name="card_used" id="card_sirket" value="Şirket Kartı" required>
-                    <label class="btn btn-outline-secondary w-100" for="card_sirket">Şirket</label>
-                </div>
-            </div>
+            <select name="card_id" class="form-select form-select-lg" required>
+                <option value="">Kart Seçiniz...</option>
+                {% for c in cards %}
+                <option value="{{ c.id }}">{{ c.name }} ({{ c.owner }})</option>
+                {% endfor %}
+            </select>
+            <div class="form-text mt-2 text-primary">Sadece 'Fahri'ye ait kartlar Metin'e borç yazdırır.</div>
         </div>
         
         <div class="mb-4">
@@ -909,9 +1069,11 @@ def odeme_kaydet():
                 document.getElementById('amount').value = amount;
             }
         }
+        // Sayfa yüklendiğinde fatura seçiliyse tutarı güncelle
+        window.onload = updateAmount;
     </script>
     {% endblock %}
-    """, bills=bills, today=today, month_names=month_names)
+    """, bills=bills, cards=cards, today=today, month_names=month_names, fatura_id=fatura_id)
 
 @app.route('/borclar', methods=['GET', 'POST'])
 @login_required
@@ -950,8 +1112,9 @@ def borclar():
         ORDER BY d.id DESC
     ''', (metin['id'], fahri['id'])).fetchall()
     
-    total_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-    total = total_row['t'] or 0
+    total_debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
+    coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
+    total = (total_debt_row['t'] or 0) - (coll_row['total'] or 0)
     
     conn.close()
     
@@ -959,9 +1122,28 @@ def borclar():
     {% block content %}
     <h3 class="mb-4">Borç Takibi</h3>
     
+    <!-- Tahsilat (Para Alındı) Formu -->
+    <div class="card p-3 mb-4 border-0 shadow-sm" style="background: #e0f2fe; border-left: 5px solid #0369a1 !important;">
+        <h6 class="fw-bold mb-2 text-primary">💰 {% if current_user.display_name == 'Fahri' %}Metin'den Para Alındı{% else %}Fahri'ye Para Verildi{% endif %} (Tahsilat)</h6>
+        <form action="{{ url_for('tahsilat_ekle') }}" method="POST" class="row g-2">
+            <div class="col-8">
+                <input type="text" name="note" class="form-control" placeholder="Açıklama (opsiyonel)">
+            </div>
+            <div class="col-4">
+                <div class="input-group">
+                    <span class="input-group-text">₺</span>
+                    <input type="number" step="0.01" name="amount" class="form-control" placeholder="Tutar" required>
+                </div>
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-primary w-100 btn-sm fw-bold">TAHSİLAT KAYDET</button>
+            </div>
+        </form>
+    </div>
+
     <!-- Manuel Borç Ekleme -->
     <div class="card p-3 mb-4 border-0 shadow-sm bg-light">
-        <h6 class="fw-bold mb-2">➕ Manuel Borç Ekle</h6>
+        <h6 class="fw-bold mb-2">➕ Manuel Borç Ekle ({% if current_user.display_name == 'Fahri' %}Metin'e Yaz{% else %}Kendime Yaz{% endif %})</h6>
         <form action="{{ url_for('manuel_borc_ekle') }}" method="POST" class="row g-2">
             <div class="col-8">
                 <input type="text" name="reason" class="form-control" placeholder="Borç Nedeni (örn: Yemek, Market)" required>
@@ -970,13 +1152,13 @@ def borclar():
                 <input type="number" step="0.01" name="amount" class="form-control" placeholder="Tutar" required>
             </div>
             <div class="col-12">
-                <button type="submit" class="btn btn-primary w-100 btn-sm fw-bold">Borç Yaz</button>
+                <button type="submit" class="btn btn-danger w-100 btn-sm fw-bold">BORÇ YAZ</button>
             </div>
         </form>
     </div>
 
     <div class="card p-4 mb-4 text-center bg-danger text-white shadow-lg border-0" style="background: linear-gradient(135deg, #dc3545, #b02a37);">
-        <h5 class="opacity-75">Metin'in Toplam Borcu</h5>
+        <h5 class="opacity-75">{% if current_user.display_name == 'Fahri' %}Metin'in Güncel Kalan Borcu{% else %}Fahri'ye Güncel Kalan Borcum{% endif %}</h5>
         <div class="dashboard-debt" style="font-size: 3.5rem;">{{ total|para }} TL</div>
     </div>
     
@@ -1046,6 +1228,36 @@ def manuel_borc_ekle():
         flash("Manuel borç eklendi.", "success")
         
     conn.close()
+    return redirect(url_for('borclar'))
+
+@app.route('/tahsilat_ekle', methods=['POST'])
+@login_required
+def tahsilat_ekle():
+    amount = float(request.form.get('amount'))
+    note = request.form.get('note', '')
+    
+    conn = database.get_db_connection()
+    conn.execute('''
+        INSERT INTO debt_collections (amount, collection_date, note)
+        VALUES (?, ?, ?)
+    ''', (amount, datetime.now().strftime('%Y-%m-%d'), note))
+    conn.commit()
+    
+    # Yeni borç hesapla
+    metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
+    fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
+    
+    total = 0
+    if metin and fahri:
+        debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
+        coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
+        total = (debt_row['t'] or 0) - (coll_row['total'] or 0)
+    
+    msg = f"💰 *TAHSİLAT ALINDI*\nMetin {format_para(amount)} TL ödeme yaptı.\n*Not:* {note if note else '-'}\n📉 *Güncel Kalan Borç:* {format_para(total)} TL"
+    notifier.notify_all(msg)
+    
+    conn.close()
+    flash("Tahsilat başarıyla kaydedildi.", "success")
     return redirect(url_for('borclar'))
 
 @app.route('/takvim')
@@ -1140,278 +1352,307 @@ def takvim():
 def raporlar():
     from datetime import timedelta
     import json as _json
-    year = int(request.args.get('year', datetime.now().year))
-    month = int(request.args.get('month', datetime.now().month))
-    month_names = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    
+    # Filtreleme Parametreleri
+    period = request.args.get('period', 'bu-ay')
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+
+    today = datetime.now()
+    
+    if period == 'bu-ay':
+        start_date = today.replace(day=1)
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        end_date = today.replace(day=last_day)
+    elif period == 'gecen-ay':
+        first_of_this_month = today.replace(day=1)
+        last_month_end = first_of_this_month - timedelta(days=1)
+        start_date = last_month_end.replace(day=1)
+        end_date = last_month_end
+    elif period == 'bu-yil':
+        start_date = today.replace(month=1, day=1)
+        end_date = today.replace(month=12, day=31)
+    else:
+        try:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        except:
+            start_date = today.replace(day=1)
+            last_day = calendar.monthrange(today.year, today.month)[1]
+            end_date = today.replace(day=last_day)
+            period = 'bu-ay'
+
+    s_str = start_date.strftime('%Y-%m-%d')
+    e_str = end_date.strftime('%Y-%m-%d')
 
     conn = database.get_db_connection()
-    start_date = f"{year}-{month:02d}-01"
-    end_date   = f"{year}-{month:02d}-31"
-
-    # 1. DÖNEM BAZLI: Bu ayın faturaları için yapılan tüm ödemeler (Raporun ana rakamlarını bu belirler)
-    period_payments = conn.execute("""
-        SELECT p.*, b.category, b.name as bill_name, mc.year as bill_year, mc.month as bill_month
-        FROM monthly_cycles mc
-        JOIN payments p ON mc.payment_id = p.id
-        JOIN bills b ON mc.bill_id = b.id
-        WHERE mc.year = ? AND mc.month = ?
-    """, (year, month)).fetchall()
-    period_payments = [dict(p) for p in period_payments]
-
-    # 2. KASA BAZLI: Bu takvim ayı içerisinde yapılan tüm ödemeler (Nakit akışını gösterir)
-    cash_payments = conn.execute("""
-        SELECT p.*, b.category, b.name as bill_name, mc.year as bill_year, mc.month as bill_month
-        FROM payments p 
-        JOIN bills b ON p.bill_id = b.id
-        LEFT JOIN monthly_cycles mc ON p.id = mc.payment_id
-        WHERE p.payment_date >= ? AND p.payment_date <= ?
-    """, (start_date, end_date)).fetchall()
-    cash_payments = [dict(p) for p in cash_payments]
-
-    # Ana rakamları hem Kasa hem Dönem bazlı olarak ayırıyoruz ki karmaşa bitsin
-    period_total_spent = sum(p['amount'] for p in period_payments)
+    kasa_row = conn.execute("SELECT SUM(amount) as total FROM payments WHERE payment_date BETWEEN ? AND ?", (s_str, e_str)).fetchone()
+    total_cash_out = kasa_row['total'] or 0
     
-    cash_total_spent = sum(p['amount'] for p in cash_payments)
-
+    banka_row = conn.execute("SELECT SUM(current_balance) as total FROM cards WHERE active = 1 AND current_balance < 0").fetchone()
+    total_bank_debt = abs(banka_row['total'] or 0)
+    
+    sabit_row = conn.execute("""
+        SELECT SUM(p.amount) as total 
+        FROM payments p 
+        JOIN bills b ON p.bill_id = b.id 
+        WHERE b.is_recurring = 1 AND p.payment_date BETWEEN ? AND ?
+    """, (s_str, e_str)).fetchone()
+    fixed_bill_total = sabit_row['total'] or 0
+    
+    # Metin'in Borcu (ANLIK DURUM)
     fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
-    fahri_id = fahri['id'] if fahri else 0
-    metin_id = metin['id'] if metin else 0
-
-    cash_fahri_paid  = sum(p['amount'] for p in cash_payments if p['paid_by_user_id'] == fahri_id)
-    cash_metin_paid  = sum(p['amount'] for p in cash_payments if p['paid_by_user_id'] == metin_id)
-
-    category_totals = {}
-    card_totals = {}
-    # Kategoriler dönemin faturalarına göre
-    for p in period_payments:
-        category_totals[p['category']] = category_totals.get(p['category'], 0) + p['amount']
-        card_totals[p['card_used']]    = card_totals.get(p['card_used'], 0) + p['amount']
-
-    metin_total_debt = 0
+    metin_debt = 0
     if fahri and metin:
-        dr = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id=? AND creditor_user_id=? AND is_paid=0",
-                          (metin_id, fahri_id)).fetchone()
-        metin_total_debt = dr['t'] or 0
+        dr = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id=? AND creditor_user_id=? AND is_paid=0", (metin['id'], fahri['id'])).fetchone()
+        cr = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
+        metin_debt = (dr['t'] or 0) - (cr['total'] or 0)
 
-    trend_labels, trend_data = [], []
-    for i in range(5, -1, -1):
-        ref = datetime(year, month, 1) - timedelta(days=i * 30)
-        m, y = ref.month, ref.year
-        row = conn.execute("""
-            SELECT COALESCE(SUM(p.amount),0) as t 
-            FROM monthly_cycles mc
-            JOIN payments p ON mc.payment_id = p.id
-            WHERE mc.year = ? AND mc.month = ?
-        """, (y, m)).fetchone()
-        trend_labels.append(month_names[m])
-        trend_data.append(float(row['t'] or 0))
+    # 2. BÖLÜMLER İÇİN LİSTELER
+    sabit_faturalar = conn.execute("""
+        SELECT p.*, b.name as bill_name, b.category 
+        FROM payments p 
+        JOIN bills b ON p.bill_id = b.id 
+        WHERE b.is_recurring = 1 AND p.payment_date BETWEEN ? AND ?
+        ORDER BY p.payment_date DESC
+    """, (s_str, e_str)).fetchall()
+    
+    ekstra_odemeler = conn.execute("""
+        SELECT p.*, b.name as bill_name, b.category 
+        FROM payments p 
+        JOIN bills b ON p.bill_id = b.id 
+        WHERE b.is_recurring = 0 AND p.payment_date BETWEEN ? AND ?
+        ORDER BY p.payment_date DESC
+    """, (s_str, e_str)).fetchall()
+    
+    kart_odemeleri = conn.execute("""
+        SELECT ct.*, c.name as card_name, c.owner as card_owner
+        FROM card_transactions ct
+        JOIN cards c ON ct.card_id = c.id
+        WHERE ct.amount > 0 AND ct.transaction_date BETWEEN ? AND ?
+        ORDER BY ct.transaction_date DESC
+    """, (s_str, e_str)).fetchall()
 
-    bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
-    bill_statuses = []
-    for b in bills:
-        b = dict(b)
-        cycle = conn.execute("SELECT status FROM monthly_cycles WHERE bill_id=? AND year=? AND month=?",
-                             (b['id'], year, month)).fetchone()
-        # Tek seferlik faturaysa ve bu ay için kaydı yoksa
-        if not b.get('is_recurring', 1) and not cycle:
-            is_paid_ever = conn.execute("SELECT id FROM monthly_cycles WHERE bill_id=? AND status='odendi'", (b['id'],)).fetchone()
-            if is_paid_ever:
-                continue # Başka ayda ödenmişse gizle
-            
-            # Hiç ödenmemiş tek seferlik faturaysa, sadece içinde bulunduğumuz gerçek takvim ayında bekliyor görünsün.
-            # Geçmiş veya gelecek aylara sarkmasın.
-            current_now = datetime.now()
-            if year != current_now.year or month != current_now.month:
-                continue
+    cat_rows = conn.execute("""
+        SELECT b.category, SUM(p.amount) as total 
+        FROM payments p 
+        JOIN bills b ON p.bill_id = b.id 
+        WHERE p.payment_date BETWEEN ? AND ?
+        GROUP BY b.category
+    """, (s_str, e_str)).fetchall()
+    
+    chart_labels = [r['category'] for r in cat_rows]
+    chart_data = [float(r['total']) for r in cat_rows]
 
-        status = dict(cycle)['status'] if cycle else 'bekliyor'
-        bill_statuses.append({'name': b['name'], 'amount': b['amount'], 'status': status,
-                              'subscriber_no': b.get('subscriber_no', '')})
-
+    # WhatsApp Raporu Gönderimi
     if request.method == 'POST':
-        msg  = f"📊 *{month_names[month]} {year} DÖNEM RAPORU*\n"
+        period_text = "BU AY" if period == "bu-ay" else ("GEÇEN AY" if period == "gecen-ay" else ("BU YIL" if period == "bu-yil" else f"{s_str} / {e_str}"))
+        msg  = f"📊 *FİNANSAL ÖZET RAPOR ({period_text})*\n"
         msg += "-----------------------------------\n\n"
+        msg += f"💰 *Toplam Kasa Çıkışı:* {format_para(total_cash_out)} TL\n"
+        msg += f"💳 *Banka Borcu (Anlık):* {format_para(total_bank_debt)} TL\n"
+        msg += f"🏠 *Sabit Giderler:* {format_para(fixed_bill_total)} TL\n"
+        debt_label = "Metin'in Borcu" if current_user.display_name == 'Fahri' else "Fahri'ye Borcum"
+        msg += f"🤝 *{debt_label}:* {format_para(metin_debt)} TL\n\n"
         
-        msg += "*📋 BU DÖNEMİN FATURALARI*\n"
-        if period_payments:
-            for p in period_payments:
-                msg += f"• {p['bill_name']}: *{format_para(p['amount'])} ₺*\n"
-        else:
-            msg += "_Bu döneme ait ödeme yok._\n"
+        if sabit_faturalar:
+            msg += "*📅 SABİT FATURALAR*\n"
+            for f in sabit_faturalar:
+                msg += f"• {f['bill_name']} [{f['card_used']}]: {format_para(f['amount'])} TL\n"
+            msg += "\n"
             
-        msg += f"\n💰 *DÖNEMİN FATURA TOPLAMI:* {format_para(period_total_spent)} ₺\n"
-        msg += "-----------------------------------\n"
-        
-        if cash_payments:
-            msg += "\n*💸 BU AY CEPTEN ÇIKAN (KASA)*\n"
-            msg += f"Kasa Çıkışı: *{format_para(cash_total_spent)} ₺*\n"
-            msg += f"👤 *Fahri:* {format_para(cash_fahri_paid)} ₺ | 👤 *Metin:* {format_para(cash_metin_paid)} ₺\n"
-        
-        if metin_total_debt > 0:
-            msg += f"⚠️ *Metin'in Kalan Borcu:* {format_para(metin_total_debt)} ₺\n"
+        if ekstra_odemeler:
+            msg += "*💸 EKSTRA ÖDEMELER*\n"
+            for e in ekstra_odemeler:
+                msg += f"• {e['bill_name']} [{e['card_used']}]: {format_para(e['amount'])} TL\n"
+            msg += "\n"
             
-        bekleyen = [b for b in bill_statuses if b['status'] == 'bekliyor']
-        if bekleyen:
-            msg += "\n*⏳ HENÜZ ÖDENMEYENLER*\n"
-            for b in bekleyen:
-                msg += f"• {b['name']}: {format_para(b['amount'])} ₺\n"
-        else:
-            msg += "\n*✅ Tüm aylık faturalar ödendi! *\n"
+        if kart_odemeleri:
+            msg += "*💳 KART YATIRIMLARI*\n"
+            for k in kart_odemeleri:
+                msg += f"• {k['card_name']} ({k['card_owner']}): {format_para(k['amount'])} TL\n"
+            msg += "\n"
 
+        msg += "-----------------------------------"
         notifier.notify_all(msg)
-        flash("Detaylı rapor WhatsApp üzerinden başarıyla gönderildi.", "success")
-        return redirect(url_for('raporlar', year=year, month=month))
+        flash("Detaylı rapor WhatsApp üzerinden gönderildi.", "success")
+        return redirect(url_for('raporlar', period=period, start_date=s_str, end_date=e_str))
 
     conn.close()
 
-    TMPL = """{% extends 'base.html' %}
+    return render_template_string("""{% extends 'base.html' %}
     {% block content %}
+    <style>
+        .filter-btn { border-radius: 10px; font-weight: 600; font-size: 0.85rem; padding: 8px 16px; border: 1px solid #e2e8f0; background: white; color: #64748b; }
+        .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+        .stat-card { border: none; border-radius: 18px; padding: 20px; transition: transform 0.2s; }
+        .stat-card:hover { transform: translateY(-3px); }
+        .stat-label { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 5px; }
+        .stat-value { font-size: 1.6rem; font-weight: 800; color: #1e293b; }
+        .mini-card { padding: 12px 15px; border-radius: 12px; }
+        .section-header { font-size: 1.1rem; font-weight: 700; color: #1e293b; margin-top: 25px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; }
+        .item-list-card { border-radius: 14px; overflow: hidden; border: 1px solid #f1f5f9; }
+        .item-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; background: white; border-bottom: 1px solid #f1f5f9; }
+        .item-row:last-child { border-bottom: none; }
+        .item-info { display: flex; flex-direction: column; }
+        .item-name { font-weight: 600; color: #334155; font-size: 0.95rem; }
+        .item-meta { font-size: 0.75rem; color: #94a3b8; }
+        .item-amount { font-weight: 700; color: #1e293b; font-size: 1rem; }
+    </style>
+
     <div class="d-flex justify-content-between align-items-center mb-4">
-        <span class="page-title">&#128202; Raporlar</span>
+        <h3 class="fw-bold mb-0">📊 Finansal Rapor</h3>
+        <form method="POST">
+            <button type="submit" class="btn btn-success fw-bold shadow-sm" style="border-radius:12px; padding: 8px 15px;">
+                <span style="font-size:1.1rem;">📱</span> Raporu WhatsApp'tan Gönder
+            </button>
+        </form>
     </div>
-    <form method="GET" class="card p-3 mb-4 d-flex flex-row gap-2">
-        <select name="month" class="form-select">
-            {% for m in range(1, 13) %}<option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ month_names[m] }}</option>{% endfor %}
-        </select>
-        <input type="number" name="year" class="form-control" value="{{ year }}" style="max-width:100px;">
-        <button type="submit" class="btn btn-primary px-4">Getir</button>
-    </form>
-    <div class="row g-2 mb-4">
-        <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--primary);">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Kasa Çıkışı (Bu Ay)</div>
-            <div style="font-size:1.5rem;font-weight:700;color:var(--primary);">{{ cash_total_spent|para }} ₺</div>
-        </div></div>
-        <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--info);">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Dönemin Faturaları</div>
-            <div style="font-size:1.5rem;font-weight:700;color:var(--info);">{{ period_total_spent|para }} ₺</div>
-        </div></div>
-        <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid #6366f1;">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Fahri Ödedi (Kasa)</div>
-            <div style="font-size:1.4rem;font-weight:700;color:#6366f1;">{{ cash_fahri_paid|para }} ₺</div>
-        </div></div>
-        <div class="col-6"><div class="card p-3 text-center" style="border-left:4px solid var(--success);">
-            <div style="font-size:0.7rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Metin Ödedi (Kasa)</div>
-            <div style="font-size:1.4rem;font-weight:700;color:var(--success);">{{ cash_metin_paid|para }} ₺</div>
-        </div></div>
+
+    <!-- Hızlı Filtreler -->
+    <div class="d-flex gap-2 mb-4 overflow-auto pb-2">
+        <a href="{{ url_for('raporlar', period='bu-ay') }}" class="filter-btn text-decoration-none {{ 'active' if period == 'bu-ay' else '' }}">Bu Ay</a>
+        <a href="{{ url_for('raporlar', period='gecen-ay') }}" class="filter-btn text-decoration-none {{ 'active' if period == 'gecen-ay' else '' }}">Geçen Ay</a>
+        <a href="{{ url_for('raporlar', period='bu-yil') }}" class="filter-btn text-decoration-none {{ 'active' if period == 'bu-yil' else '' }}">Bu Yıl</a>
+        <button class="filter-btn" data-bs-toggle="collapse" data-bs-target="#customFilter">Özel Tarih</button>
     </div>
+
+    <div class="collapse mb-4" id="customFilter">
+        <form method="GET" class="card p-3 border-0 shadow-sm" style="border-radius:15px;">
+            <div class="row g-2">
+                <div class="col-5"><input type="date" name="start_date" class="form-control" value="{{ start_date.strftime('%Y-%m-%d') }}"></div>
+                <div class="col-5"><input type="date" name="end_date" class="form-control" value="{{ end_date.strftime('%Y-%m-%d') }}"></div>
+                <div class="col-2"><button type="submit" class="btn btn-primary w-100">✓</button></div>
+            </div>
+            <input type="hidden" name="period" value="custom">
+        </form>
+    </div>
+
+    <!-- Özet Kartları -->
+    <div class="row g-3 mb-4">
+        <div class="col-6">
+            <div class="stat-card shadow-sm" style="background: white; border-bottom: 4px solid var(--primary);">
+                <div class="stat-label">Toplam Kasa Çıkışı</div>
+                <div class="stat-value">{{ total_cash_out|para }} <span style="font-size:1rem; opacity:0.6;">₺</span></div>
+            </div>
+        </div>
+        <div class="col-6">
+            <div class="stat-card shadow-sm" style="background: white; border-bottom: 4px solid var(--danger);">
+                <div class="stat-label">Toplam Banka Borcu</div>
+                <div class="stat-value text-danger">{{ total_bank_debt|para }} <span style="font-size:1rem; opacity:0.6;">₺</span></div>
+            </div>
+        </div>
+        <div class="col-12">
+            <div class="card p-3 shadow-sm border-0 d-flex flex-row justify-content-between align-items-center" style="background: #f8fafc; border-radius:18px;">
+                <div>
+                    <div class="stat-label" style="margin-bottom:0;">Sabit Fatura Toplamı</div>
+                    <div style="font-size:1.3rem; font-weight:800; color:var(--primary);">{{ fixed_bill_total|para }} ₺</div>
+                </div>
+                <div class="text-end" style="border-left: 1px solid #e2e8f0; padding-left: 20px;">
+                    <div class="stat-label" style="margin-bottom:0;">{% if current_user.display_name == 'Fahri' %}Metin'in Borcu{% else %}Fahri'ye Borcum{% endif %}</div>
+                    <div style="font-size:1.1rem; font-weight:700; color:var(--danger);">{{ metin_debt|para }} ₺</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Grafik Bölümü -->
+    <div class="card p-4 border-0 shadow-sm mb-4" style="border-radius:20px;">
+        <div class="section-header mt-0 mb-3" style="font-size:0.9rem;">📉 GİDER DAĞILIMI (Kategoriler)</div>
+        <div style="max-width:250px; margin: 0 auto;">
+            <canvas id="expenseChart"></canvas>
+        </div>
+        {% if not chart_data %}
+        <div class="text-center text-muted small mt-3">Bu tarih aralığında harcama verisi yok.</div>
+        {% endif %}
+    </div>
+
+    <!-- Liste Bölümleri -->
     
-    <div class="card p-4 mb-4 text-center shadow-sm border-0" style="background: linear-gradient(135deg, #fef2f2, #fecaca);">
-        <div style="font-size:0.8rem;color:var(--danger);font-weight:700;text-transform:uppercase;">Metin'in Güncel Toplam Borcu</div>
-        <div style="font-size:2rem;font-weight:800;color:var(--danger);">{{ metin_total_debt|para }} ₺</div>
-    </div>    <div class="card p-3 mb-4">
-        <div class="section-title">Son 6 Ay Trendi</div>
-        <canvas id="trendChart" height="150"></canvas>
-    </div>
-    <div class="card p-3 mb-4">
-        <div class="section-title mb-3">Kategorilere Göre</div>
-        {% if category_totals %}{% for cat, amount in category_totals.items() %}
-        <div class="mb-3">
-            <div class="d-flex justify-content-between mb-1">
-                <span style="font-weight:500;font-size:0.9rem;">{{ cat }}</span>
-                <span style="font-weight:600;font-size:0.9rem;">{{ amount|para }} ₺
-                    {% if period_total_spent > 0 %}<span style="color:var(--text-muted);font-size:0.8rem;">({{ (amount/period_total_spent*100)|int }}%)</span>{% endif %}
-                </span>
+    <div class="section-header">🏠 Aylık Sabit Faturalar</div>
+    <div class="item-list-card shadow-sm">
+        {% for f in sabit_faturalar %}
+        <div class="item-row">
+            <div class="item-info">
+                <span class="item-name">{{ f.bill_name }}</span>
+                <span class="item-meta">{{ f.category }} · {{ f.card_used }} · {{ f.payment_date }}</span>
             </div>
-            <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
-                <div style="height:100%;border-radius:3px;background:var(--primary);width:{% if period_total_spent > 0 %}{{ (amount/period_total_spent*100)|int }}%{% else %}0%{% endif %};"></div>
-            </div>
-        </div>{% endfor %}{% else %}
-        <div class="text-muted text-center py-3">Bu ay veri yok.</div>{% endif %}
-    </div>
-    <div class="card p-3 mb-4">
-        <div class="section-title mb-3">KART KULLANIMI</div>
-        {% for card, amount in card_totals.items() %}
-        <div class="d-flex justify-content-between align-items-center mb-2">
-            <span style="font-weight:500;">{{ card }}</span>
-            <div class="d-flex align-items-center gap-2">
-                <div style="height:4px;width:80px;background:#e2e8f0;border-radius:2px;overflow:hidden;">
-                    <div style="height:100%;background:var(--primary);width:{% if period_total_spent > 0 %}{{ (amount/period_total_spent*100)|int }}%{% else %}0%{% endif %};"></div>
-                </div>
-                <span style="font-weight:700;font-size:0.9rem;">{{ amount|para }} ₺</span>
-            </div>
-        </div>{% else %}<div class="text-muted text-center py-3">Bu ay veri yok.</div>{% endfor %}
-    </div>
-    <div class="card p-3 mb-4">
-        <div class="section-title mb-3" style="color:var(--success);">✅ BU DÖNEMİN ÖDENEN FATURALARI</div>
-        {% for p in period_payments %}
-        <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f0fdf4;border:1px solid #dcfce7;">
-            <div>
-                <div style="font-weight:600;font-size:0.9rem;">{{ p.bill_name }}</div>
-                <div style="font-size:0.75rem;color:var(--text-muted);">
-                    Ödeme Tarihi: {{ p.payment_date }}
-                </div>
-            </div>
-            <div class="d-flex align-items-center gap-2">
-                <span style="font-weight:700;font-size:0.9rem;">{{ p.amount|para }} ₺</span>
-                <span class="badge bg-success">✓</span>
-            </div>
-        </div>{% else %}<div class="text-muted text-center py-3">Bu döneme ait ödenmiş fatura yok.</div>{% endfor %}
+            <div class="item-amount text-success">{{ f.amount|para }} ₺</div>
+        </div>
+        {% else %}
+        <div class="p-4 text-center text-muted small bg-white">Ödenmiş sabit fatura bulunamadı.</div>
+        {% endfor %}
     </div>
 
-    <div class="card p-3 mb-4">
-        <div class="section-title mb-3" style="color:var(--primary);">💰 BU TAKVİM AYINDAKİ KASA ÇIKIŞI</div>
-        <p class="text-muted small mb-3">Seçilen ay içerisinde yapılan tüm ödemeler (diğer ayların faturaları dahil).</p>
-        {% for p in cash_payments %}
-        <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;">
-            <div>
-                <div style="font-weight:600;font-size:0.9rem;">{{ p.bill_name }}</div>
-                <div style="font-size:0.75rem;color:var(--text-muted);">
-                    Fatura Dönemi: <strong>{{ p.bill_month }}/{{ p.bill_year }}</strong>
-                </div>
+    <div class="section-header">💸 Ekstra / Manuel Ödemeler</div>
+    <div class="item-list-card shadow-sm">
+        {% for e in ekstra_odemeler %}
+        <div class="item-row">
+            <div class="item-info">
+                <span class="item-name">{{ e.bill_name }}</span>
+                <span class="item-meta">{{ e.category }} · {{ e.card_used }} · {{ e.payment_date }}</span>
             </div>
-            <div class="d-flex align-items-center gap-2">
-                <span style="font-weight:700;font-size:0.9rem;">{{ p.amount|para }} ₺</span>
-            </div>
-        </div>{% else %}<div class="text-muted text-center py-3">Bu takvim ayında kasa çıkışı yok.</div>{% endfor %}
+            <div class="item-amount" style="color:var(--primary);">{{ e.amount|para }} ₺</div>
+        </div>
+        {% else %}
+        <div class="p-4 text-center text-muted small bg-white">Ekstra harcama kaydı yok.</div>
+        {% endfor %}
     </div>
 
-    <div class="card p-3 mb-4">
-        <div class="section-title mb-3">{{ month_names[month] }} {{ year }} FATURA DURUMU (Bekleyenler)</div>
-        {% for b in bill_statuses %}
-        <div class="d-flex justify-content-between align-items-center mb-2 p-2" style="border-radius:10px;background:#f8fafc;">
-            <div>
-                <div style="font-weight:600;font-size:0.9rem;">{{ b.name }}</div>
-                {% if b.subscriber_no %}<div style="font-size:0.75rem;color:var(--text-muted);">Abone: {{ b.subscriber_no }}</div>{% endif %}
+    <div class="section-header">💳 Kart Yatırımları (Ekstre)</div>
+    <div class="item-list-card shadow-sm">
+        {% for k in kart_odemeleri %}
+        <div class="item-row">
+            <div class="item-info">
+                <span class="item-name">{{ k.card_name }}</span>
+                <span class="item-meta">{{ k.card_owner }} · {{ k.transaction_date }}</span>
             </div>
-            <div class="d-flex align-items-center gap-2">
-                <span style="font-weight:700;font-size:0.9rem;">{{ b.amount|para }} ₺</span>
-                {% if b.status == 'odendi' %}<span class="badge" style="background:#d1fae5;color:#065f46;">&#10003; &#214;dendi</span>
-                {% else %}<span class="badge" style="background:#fee2e2;color:#991b1b;">&#9203; Bekliyor</span>{% endif %}
-            </div>
-        </div>{% else %}<div class="text-muted text-center py-3">Fatura yok.</div>{% endfor %}
+            <div class="item-amount" style="color:var(--success);">+{{ k.amount|para }} ₺</div>
+        </div>
+        {% else %}
+        <div class="p-4 text-center text-muted small bg-white">Kart ödeme kaydı yok.</div>
+        {% endfor %}
     </div>
-    <form method="POST" class="mb-4">
-        <button type="submit" class="btn btn-success btn-lg w-100 py-3 fw-bold" style="border-radius:14px;"><i class="fa-brands fa-whatsapp me-2"></i>Raporu WhatsApp'tan Gönder</button>
-    </form>
+
     {% endblock %}
+
     {% block scripts %}
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
-    new Chart(document.getElementById('trendChart'), {
-        type: 'bar',
-        data: {
-            labels: TREND_LABELS_PLACEHOLDER,
-            datasets: [{ data: TREND_DATA_PLACEHOLDER, backgroundColor: 'rgba(99,102,241,0.75)', borderRadius: 8, borderSkipped: false }]
-        },
-        options: { responsive: true, plugins: { legend: { display: false } },
-            scales: { y: { beginAtZero: true, grid: { color: '#e2e8f0' } }, x: { grid: { display: false } } } }
-    });
+        const ctx = document.getElementById('expenseChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: {{ chart_labels|tojson|safe }},
+                datasets: [{
+                    data: {{ chart_data|tojson|safe }},
+                    backgroundColor: [
+                        '#6366f1', '#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'
+                    ],
+                    borderWidth: 2,
+                    borderRadius: 5,
+                    hoverOffset: 10
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            usePointStyle: true,
+                            padding: 20,
+                            font: { size: 11, weight: '600' }
+                        }
+                    }
+                },
+                cutout: '70%'
+            }
+        });
     </script>
     {% endblock %}
-    """
-
-    TMPL = TMPL.replace('TREND_LABELS_PLACEHOLDER', _json.dumps(trend_labels))
-    TMPL = TMPL.replace('TREND_DATA_PLACEHOLDER', _json.dumps(trend_data))
-
-    return render_template_string(TMPL, year=year, month=month, month_names=month_names,
-        cash_total_spent=cash_total_spent, period_total_spent=period_total_spent, 
-        cash_fahri_paid=cash_fahri_paid, cash_metin_paid=cash_metin_paid,
-        metin_total_debt=metin_total_debt, category_totals=category_totals,
-        card_totals=card_totals, bill_statuses=bill_statuses,
-        period_payments=period_payments, cash_payments=cash_payments)
-
-
+    """, period=period, start_date=start_date, end_date=end_date, total_cash_out=total_cash_out, total_bank_debt=total_bank_debt, fixed_bill_total=fixed_bill_total, metin_debt=metin_debt, sabit_faturalar=sabit_faturalar, ekstra_odemeler=ekstra_odemeler, kart_odemeleri=kart_odemeleri, chart_labels=chart_labels, chart_data=chart_data)
 
 @app.route('/ayarlar', methods=['GET', 'POST'])
 @login_required
@@ -1509,14 +1750,16 @@ def kartlar():
             due_day = request.form.get('due_day')
             due_day = int(due_day) if due_day else None
             current_balance = float(request.form.get('current_balance') or 0)
+            total_limit = float(request.form.get('total_limit') or 0)
+            statement_day = int(request.form.get('statement_day') or 1)
 
             if not name:
                 flash("Kart adı boş olamaz.", "danger")
             else:
                 conn.execute('''
-                    INSERT INTO cards (name, owner, type, due_day, current_balance, active)
-                    VALUES (?, ?, ?, ?, ?, 1)
-                ''', (name, owner, card_type, due_day, current_balance))
+                    INSERT INTO cards (name, owner, type, due_day, current_balance, total_limit, statement_day, active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                ''', (name, owner, card_type, due_day, current_balance, total_limit, statement_day))
                 flash("Kart/Eksi Hesap başarıyla eklendi.", "success")
         conn.commit()
         return redirect(url_for('kartlar'))
@@ -1565,7 +1808,7 @@ def kartlar():
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
                             <div class="fw-bold" style="color:var(--text);">{{ c.name }}</div>
-                            <div class="small text-muted">{{ c.owner }} · Son Ödeme: Ayın {{ c.due_day }}. günü</div>
+                            <div class="small text-muted">{{ c.owner }} · Son Ödeme: {{ c.due_day }} | Kesim: {{ c.statement_day }}</div>
                         </div>
                         <div class="text-end">
                             <div style="font-weight:700; font-size:1.2rem; color:{% if c.current_balance < 0 %}var(--danger){% else %}var(--success){% endif %};">
@@ -1573,6 +1816,21 @@ def kartlar():
                             </div>
                         </div>
                     </div>
+                    {% if c.total_limit > 0 %}
+                    <div class="mt-2">
+                        {% set used_percent = ((c.current_balance|abs) / c.total_limit * 100)|int %}
+                        {% set available = c.total_limit + c.current_balance %}
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span>Kullanım: %{{ used_percent }}</span>
+                            <span>Limit: {{ c.total_limit|para }} ₺</span>
+                        </div>
+                        <div class="progress" style="height: 8px; border-radius: 4px; background-color: #e2e8f0;">
+                            <div class="progress-bar {% if used_percent > 85 %}bg-danger{% elif used_percent > 60 %}bg-warning{% else %}bg-primary{% endif %}" 
+                                 role="progressbar" style="width: {{ used_percent }}%;" aria-valuenow="{{ used_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <div class="text-end small fw-bold mt-1" style="color:var(--success);">Kullanılabilir: {{ available|para }} ₺</div>
+                    </div>
+                    {% endif %}
                 </div>
             </a>
         </div>
@@ -1625,6 +1883,7 @@ def kartlar():
                     <select name="owner" class="form-select">
                         <option value="Fahri">Fahri</option>
                         <option value="Metin">Metin</option>
+                        <option value="Şirket/Ortak">Şirket/Ortak</option>
                     </select>
                 </div>
                 <div class="mb-3">
@@ -1636,17 +1895,29 @@ def kartlar():
                         <label class="btn btn-outline-primary flex-fill" for="type_eh">Eksi Hesap</label>
                     </div>
                 </div>
-                <div class="mb-3" id="due_day_container">
-                    <label class="form-label text-secondary small fw-bold">Son Ödeme Günü (Ayın Kaçı?)</label>
-                    <input type="number" name="due_day" class="form-control" placeholder="1-31" min="1" max="31">
+                <div class="row">
+                    <div class="col-6 mb-3">
+                        <label class="form-label text-secondary small fw-bold">Toplam Limit</label>
+                        <input type="number" step="0.01" name="total_limit" class="form-control" placeholder="10000" required>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <label class="form-label text-secondary small fw-bold">Güncel Bakiye</label>
+                        <input type="number" step="0.01" name="current_balance" class="form-control" value="0">
+                    </div>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label text-secondary small fw-bold">Güncel Bakiye (Eksi olabilir)</label>
-                    <input type="number" step="0.01" name="current_balance" class="form-control" value="0">
+                <div class="row" id="cc_days_container">
+                    <div class="col-6 mb-3">
+                        <label class="form-label text-secondary small fw-bold">Kesim Günü</label>
+                        <input type="number" name="statement_day" class="form-control" placeholder="1-31" min="1" max="31" value="1">
+                    </div>
+                    <div class="col-6 mb-3">
+                        <label class="form-label text-secondary small fw-bold">Son Ödeme Günü</label>
+                        <input type="number" name="due_day" class="form-control" placeholder="1-31" min="1" max="31">
+                    </div>
                 </div>
               </div>
               <div class="modal-footer border-0 pt-0">
-                <button type="submit" class="btn btn-primary w-100 py-3 fw-bold">Kaydet</button>
+                <button type="submit" class="btn btn-primary w-100 py-3 fw-bold shadow">Kaydet</button>
               </div>
           </form>
         </div>
@@ -1656,11 +1927,11 @@ def kartlar():
     <script>
         document.querySelectorAll('input[name="type"]').forEach(radio => {
             radio.addEventListener('change', function() {
-                const dueDayContainer = document.getElementById('due_day_container');
+                const ccDaysContainer = document.getElementById('cc_days_container');
                 if (this.value === 'Eksi Hesap') {
-                    dueDayContainer.style.display = 'none';
+                    ccDaysContainer.style.display = 'none';
                 } else {
-                    dueDayContainer.style.display = 'block';
+                    ccDaysContainer.style.display = 'flex';
                 }
             });
         });
@@ -1668,10 +1939,27 @@ def kartlar():
     {% endblock %}
     """, cc_cards=cc_cards, eh_cards=eh_cards, total_cc_debt=total_cc_debt, total_eh_debt=total_eh_debt, total_debt=total_debt)
 
-@app.route('/kart/<int:card_id>')
+@app.route('/kart/<int:card_id>', methods=['GET', 'POST'])
 @login_required
 def kart_detay(card_id):
     conn = database.get_db_connection()
+    if request.method == 'POST' and 'edit_card' in request.form:
+        name = request.form.get('name', '').strip()
+        owner = request.form.get('owner')
+        total_limit = float(request.form.get('total_limit') or 0)
+        statement_day = int(request.form.get('statement_day') or 1)
+        due_day = request.form.get('due_day')
+        due_day = int(due_day) if due_day else None
+        
+        conn.execute('''
+            UPDATE cards 
+            SET name=?, owner=?, total_limit=?, statement_day=?, due_day=?
+            WHERE id=?
+        ''', (name, owner, total_limit, statement_day, due_day, card_id))
+        conn.commit()
+        flash("Kart bilgileri güncellendi.", "success")
+        return redirect(url_for('kart_detay', card_id=card_id))
+
     card = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
     if not card:
         conn.close()
@@ -1685,18 +1973,41 @@ def kart_detay(card_id):
     {% block content %}
     <div class="d-flex justify-content-between align-items-center mb-3">
         <a href="{{ url_for('kartlar') }}" class="btn btn-sm btn-outline-secondary">← Geri</a>
-        <form method="POST" action="{{ url_for('kart_sil', card_id=card.id) }}" onsubmit="return confirm('Bu kartı ve tüm geçmişini silmek istediğinize emin misiniz?');">
-            <button class="btn btn-sm btn-outline-danger">Kartı Sil</button>
-        </form>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editCardModal">Düzenle</button>
+            <form method="POST" action="{{ url_for('kart_sil', card_id=card.id) }}" onsubmit="return confirm('Bu kartı ve tüm geçmişini silmek istediğinize emin misiniz?');" style="margin:0;">
+                <button class="btn btn-sm btn-outline-danger">Sil</button>
+            </form>
+        </div>
     </div>
 
     <div class="card p-4 text-center shadow-sm mb-4 border-0" style="background: linear-gradient(135deg, #1e293b 0%, #334155 100%); color: white;">
         <div class="small opacity-75 text-uppercase fw-bold mb-1">{{ card.name }} ({{ card.owner }})</div>
         <div style="font-size: 2.4rem; font-weight: 700;" class="mb-1">{{ card.current_balance|para }} ₺</div>
-        <div class="small opacity-75">{% if card.type == 'Kredi Kartı' %}Son Ödeme: Ayın {{ card.due_day }}. günü{% else %}Eksi Hesap / KMH{% endif %}</div>
+        <div class="small opacity-75">
+            {% if card.type == 'Kredi Kartı' %}
+                Kesim: {{ card.statement_day }} | Son Ödeme: {{ card.due_day }}
+            {% else %}
+                Eksi Hesap / KMH
+            {% endif %}
+        </div>
         
+        {% if card.type == 'Kredi Kartı' and card.total_limit > 0 %}
+        <div class="mt-3 px-4">
+            {% set used_percent = ((card.current_balance|abs) / card.total_limit * 100)|int %}
+            <div class="progress" style="height: 10px; border-radius: 5px; background-color: rgba(255,255,255,0.2);">
+                <div class="progress-bar {% if used_percent > 85 %}bg-danger{% elif used_percent > 60 %}bg-warning{% else %}bg-info{% endif %}" 
+                     role="progressbar" style="width: {{ used_percent }}%;"></div>
+            </div>
+            <div class="d-flex justify-content-between small mt-1">
+                <span>Doluluk: %{{ used_percent }}</span>
+                <span>Limit: {{ card.total_limit|para }} ₺</span>
+            </div>
+        </div>
+        {% endif %}
+
         <button class="btn btn-primary mt-4 py-2 px-4 fw-bold shadow" data-bs-toggle="modal" data-bs-target="#addTransactionModal">
-            💳 Ödeme Ekle / Bakiye Güncelle
+            💳 İşlem Ekle
         </button>
     </div>
 
@@ -1722,6 +2033,54 @@ def kart_detay(card_id):
         {% endfor %}
     </div>
 
+    <!-- Düzenle Modal -->
+    <div class="modal fade" id="editCardModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <form method="POST">
+              <input type="hidden" name="edit_card" value="1">
+              <div class="modal-header border-0">
+                <h5 class="modal-title fw-bold">Kart Bilgilerini Güncelle</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Kart Adı</label>
+                    <input type="text" name="name" class="form-control" value="{{ card.name }}" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Sahibi</label>
+                    <select name="owner" class="form-select">
+                        <option value="Fahri" {% if card.owner == 'Fahri' %}selected{% endif %}>Fahri</option>
+                        <option value="Metin" {% if card.owner == 'Metin' %}selected{% endif %}>Metin</option>
+                        <option value="Şirket/Ortak" {% if card.owner == 'Şirket/Ortak' %}selected{% endif %}>Şirket/Ortak</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Toplam Limit</label>
+                    <input type="number" step="0.01" name="total_limit" class="form-control" value="{{ card.total_limit }}" required>
+                </div>
+                {% if card.type == 'Kredi Kartı' %}
+                <div class="row">
+                    <div class="col-6 mb-3">
+                        <label class="form-label small fw-bold">Kesim Günü</label>
+                        <input type="number" name="statement_day" class="form-control" value="{{ card.statement_day }}" min="1" max="31">
+                    </div>
+                    <div class="col-6 mb-3">
+                        <label class="form-label small fw-bold">Son Ödeme Günü</label>
+                        <input type="number" name="due_day" class="form-control" value="{{ card.due_day }}" min="1" max="31">
+                    </div>
+                </div>
+                {% endif %}
+              </div>
+              <div class="modal-footer border-0">
+                <button type="submit" class="btn btn-primary w-100 py-3 fw-bold">Kaydet</button>
+              </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
     <!-- İşlem Ekle Modal -->
     <div class="modal fade" id="addTransactionModal" tabindex="-1">
       <div class="modal-dialog modal-dialog-centered">
@@ -1735,7 +2094,6 @@ def kart_detay(card_id):
                 <div class="mb-3">
                     <label class="form-label text-secondary small fw-bold">Tutar (+ veya -)</label>
                     <input type="number" step="0.01" name="amount" class="form-control form-control-lg" placeholder="Örn: 5000 veya -2500" required>
-                    <div class="small text-muted mt-1">Ödeme yaptıysanız <b>pozitif</b>, harcama/eksiye düşüş ise <b>negatif</b> değer girin.</div>
                 </div>
                 <div class="mb-3">
                     <label class="form-label text-secondary small fw-bold">İşlem Tarihi</label>
@@ -1743,7 +2101,7 @@ def kart_detay(card_id):
                 </div>
                 <div class="mb-3">
                     <label class="form-label text-secondary small fw-bold">Not</label>
-                    <input type="text" name="note" class="form-control" placeholder="Örn: Kredi Kartı Ödemesi">
+                    <input type="text" name="note" class="form-control" placeholder="Örn: Market harcaması">
                 </div>
               </div>
               <div class="modal-footer border-0 pt-0">

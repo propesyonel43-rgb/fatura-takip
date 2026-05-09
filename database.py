@@ -107,7 +107,8 @@ CREATE TABLE IF NOT EXISTS bills (
     active INTEGER DEFAULT 1,
     notes TEXT,
     is_autopay INTEGER DEFAULT 0,
-    subscriber_no TEXT DEFAULT ''
+    subscriber_no TEXT DEFAULT '',
+    autopay_card_name TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS notification_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,7 +163,9 @@ CREATE TABLE IF NOT EXISTS cards (
     type TEXT NOT NULL,
     due_day INTEGER,
     current_balance REAL DEFAULT 0,
-    active INTEGER DEFAULT 1
+    active INTEGER DEFAULT 1,
+    total_limit REAL DEFAULT 0,
+    statement_day INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS card_transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +180,12 @@ CREATE TABLE IF NOT EXISTS card_notification_log (
     card_id INTEGER NOT NULL,
     log_date TEXT NOT NULL,
     UNIQUE(card_id, log_date)
+);
+CREATE TABLE IF NOT EXISTS debt_collections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    amount REAL NOT NULL,
+    collection_date TEXT NOT NULL,
+    note TEXT
 );
 """
 
@@ -205,7 +214,8 @@ CREATE TABLE IF NOT EXISTS bills (
     active INTEGER DEFAULT 1,
     notes TEXT,
     is_autopay INTEGER DEFAULT 0,
-    subscriber_no TEXT DEFAULT ''
+    subscriber_no TEXT DEFAULT '',
+    autopay_card_name TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS notification_log (
     id SERIAL PRIMARY KEY,
@@ -253,7 +263,9 @@ CREATE TABLE IF NOT EXISTS cards (
     type TEXT NOT NULL,
     due_day INTEGER,
     current_balance REAL DEFAULT 0,
-    active INTEGER DEFAULT 1
+    active INTEGER DEFAULT 1,
+    total_limit REAL DEFAULT 0,
+    statement_day INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS card_transactions (
     id SERIAL PRIMARY KEY,
@@ -267,6 +279,12 @@ CREATE TABLE IF NOT EXISTS card_notification_log (
     card_id INTEGER NOT NULL,
     log_date TEXT NOT NULL,
     UNIQUE(card_id, log_date)
+);
+CREATE TABLE IF NOT EXISTS debt_collections (
+    id SERIAL PRIMARY KEY,
+    amount REAL NOT NULL,
+    collection_date TEXT NOT NULL,
+    note TEXT
 );
 """
 
@@ -322,6 +340,39 @@ def init_db():
             conn.execute("CREATE TABLE IF NOT EXISTS cards (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, owner TEXT NOT NULL, type TEXT NOT NULL, due_day INTEGER, current_balance REAL DEFAULT 0, active INTEGER DEFAULT 1)")
             conn.execute("CREATE TABLE IF NOT EXISTS card_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER NOT NULL, amount REAL NOT NULL, transaction_date TEXT NOT NULL, note TEXT, FOREIGN KEY (card_id) REFERENCES cards (id))")
             conn.execute("CREATE TABLE IF NOT EXISTS card_notification_log (id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER NOT NULL, log_date TEXT NOT NULL, UNIQUE(card_id, log_date))")
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+
+    # Migration: New card columns (total_limit, statement_day)
+    try:
+        conn.execute("ALTER TABLE cards ADD COLUMN total_limit REAL DEFAULT 0")
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+    try:
+        conn.execute("ALTER TABLE cards ADD COLUMN statement_day INTEGER DEFAULT 1")
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+
+    # Migration: bills table (autopay_card_name)
+    try:
+        conn.execute("ALTER TABLE bills ADD COLUMN autopay_card_name TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+
+    # Migration: debt_collections table
+    try:
+        if DATABASE_URL:
+            conn.execute("CREATE TABLE IF NOT EXISTS debt_collections (id SERIAL PRIMARY KEY, amount REAL NOT NULL, collection_date TEXT NOT NULL, note TEXT)")
+        else:
+            conn.execute("CREATE TABLE IF NOT EXISTS debt_collections (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL NOT NULL, collection_date TEXT NOT NULL, note TEXT)")
         conn.commit()
     except Exception:
         try: conn.rollback()
