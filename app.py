@@ -1450,29 +1450,19 @@ def raporlar():
         period_text = "BU AY" if period == "bu-ay" else ("GEÇEN AY" if period == "gecen-ay" else ("BU YIL" if period == "bu-yil" else f"{s_str} / {e_str}"))
         msg  = f"📊 *FİNANSAL ÖZET RAPOR ({period_text})*\n"
         msg += "-----------------------------------\n\n"
-        msg += f"💰 *Toplam Kasa Çıkışı:* {format_para(total_cash_out)} TL\n"
-        msg += f"💳 *Banka Borcu (Anlık):* {format_para(total_bank_debt)} TL\n"
-        msg += f"🏠 *Sabit Giderler:* {format_para(fixed_bill_total)} TL\n"
+        msg += f"💰 *Kasa Çıkışı:* {format_para(total_cash_out)} TL\n"
+        msg += f"💳 *Banka Borcu:* {format_para(total_bank_debt)} TL\n"
+        msg += f"🏠 *Sabit Gider:* {format_para(fixed_bill_total)} TL\n"
         debt_label = "Metin'in Borcu" if current_user.display_name == 'Fahri' else "Fahri'ye Borcum"
         msg += f"🤝 *{debt_label}:* {format_para(metin_debt)} TL\n\n"
         
-        if sabit_faturalar:
-            msg += "*📅 SABİT FATURALAR*\n"
-            for f in sabit_faturalar:
-                msg += f"• {f['bill_name']} [{f['card_used']}]: {format_para(f['amount'])} TL\n"
-            msg += "\n"
+        msg += "*📁 KATEGORİ ÖZETİ*\n"
+        for label, amount in zip(chart_labels, chart_data):
+            msg += f"• {label}: {format_para(amount)} TL\n"
             
-        if ekstra_odemeler:
-            msg += "*💸 EKSTRA ÖDEMELER*\n"
-            for e in ekstra_odemeler:
-                msg += f"• {e['bill_name']} [{e['card_used']}]: {format_para(e['amount'])} TL\n"
-            msg += "\n"
-            
-        if kart_odemeleri:
-            msg += "*💳 KART YATIRIMLARI*\n"
-            for k in kart_odemeleri:
-                msg += f"• {k['card_name']} ({k['card_owner']}): {format_para(k['amount'])} TL\n"
-            msg += "\n"
+        msg += "\n🔍 *Detaylı Liste ve Grafikler:*\n"
+        report_url = url_for('raporlar', period=period, start_date=s_str, end_date=e_str, _external=True)
+        msg += report_url + "\n\n"
 
         msg += "-----------------------------------"
         notifier.notify_all(msg)
