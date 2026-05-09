@@ -1529,6 +1529,9 @@ def kartlar():
     total_eh_debt = sum(c['current_balance'] for c in cards_list if c['type'] == 'Eksi Hesap' and c['current_balance'] < 0)
     total_debt = total_cc_debt + total_eh_debt
 
+    cc_cards = [c for c in cards_list if c['type'] == 'Kredi Kartı']
+    eh_cards = [c for c in cards_list if c['type'] == 'Eksi Hesap']
+
     return render_template_string("""{% extends 'base.html' %}
     {% block content %}
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -1555,9 +1558,7 @@ def kartlar():
     
     <div class="section-title">Kredi Kartları</div>
     <div class="row g-2 mb-4">
-        {% set cc_count = 0 %}
-        {% for c in cards if c.type == 'Kredi Kartı' %}
-        {% set cc_count = cc_count + 1 %}
+        {% for c in cc_cards %}
         <div class="col-12">
             <a href="{{ url_for('kart_detay', card_id=c.id) }}" class="text-decoration-none">
                 <div class="card p-3 shadow-sm mb-0">
@@ -1575,17 +1576,14 @@ def kartlar():
                 </div>
             </a>
         </div>
-        {% endfor %}
-        {% if cc_count == 0 %}
+        {% else %}
         <div class="col-12"><div class="card p-3 text-center text-muted small">Henüz kredi kartı eklenmemiş.</div></div>
-        {% endif %}
+        {% endfor %}
     </div>
 
     <div class="section-title">Eksi Hesaplar / KMH</div>
     <div class="row g-2 mb-4">
-        {% set eh_count = 0 %}
-        {% for c in cards if c.type == 'Eksi Hesap' %}
-        {% set eh_count = eh_count + 1 %}
+        {% for c in eh_cards %}
         <div class="col-12">
             <a href="{{ url_for('kart_detay', card_id=c.id) }}" class="text-decoration-none">
                 <div class="card p-3 shadow-sm mb-0">
@@ -1603,10 +1601,9 @@ def kartlar():
                 </div>
             </a>
         </div>
-        {% endfor %}
-        {% if eh_count == 0 %}
+        {% else %}
         <div class="col-12"><div class="card p-3 text-center text-muted small">Henüz eksi hesap eklenmemiş.</div></div>
-        {% endif %}
+        {% endfor %}
     </div>
 
     <!-- Ekle Modal -->
@@ -1669,7 +1666,7 @@ def kartlar():
         });
     </script>
     {% endblock %}
-    """, cards=cards)
+    """, cc_cards=cc_cards, eh_cards=eh_cards, total_cc_debt=total_cc_debt, total_eh_debt=total_eh_debt, total_debt=total_debt)
 
 @app.route('/kart/<int:card_id>')
 @login_required
