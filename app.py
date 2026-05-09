@@ -8,6 +8,7 @@ if _db_url.startswith("postgres://"):
 from flask import Flask, render_template_string, request, redirect, url_for, flash, session
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
+from urllib.parse import urlparse
 from datetime import datetime
 import calendar
 from jinja2 import DictLoader
@@ -294,7 +295,10 @@ def login():
         conn.close()
         if user and check_password_hash(user['password_hash'], password):
             login_user(User(dict(user)))
-            return redirect(url_for('dashboard'))
+            next_page = request.args.get('next')
+            if not next_page or urlparse(next_page).netloc != '':
+                next_page = url_for('dashboard')
+            return redirect(next_page)
         flash("Hatalı giriş, tekrar deneyin.", "danger")
     return render_template_string("""{% extends 'base.html' %}
     {% block content %}
@@ -338,6 +342,16 @@ def dashboard():
     # Banka Borcu Hesaplama (Dashboard için)
     bank_debt_row = conn.execute("SELECT SUM(current_balance) as total FROM cards WHERE active = 1 AND current_balance < 0").fetchone()
     total_bank_debt = abs(bank_debt_row['total'] or 0)
+
+    # Bu Ay Fahri'nin Ödediği Toplam
+    fahri_paid_total = 0
+    if fahri:
+        start_date = today.replace(day=1).strftime('%Y-%m-%d')
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        end_date = today.replace(day=last_day).strftime('%Y-%m-%d')
+        f_row = conn.execute("SELECT SUM(amount) as total FROM payments WHERE paid_by_user_id = ? AND payment_date BETWEEN ? AND ?", 
+                            (fahri['id'], start_date, end_date)).fetchone()
+        fahri_paid_total = f_row['total'] or 0
 
     payments = conn.execute('''
         SELECT p.*, b.name as bill_name, u.display_name as payer_name 
@@ -416,12 +430,21 @@ def dashboard():
         </div>
     </div>
 
-    <div class="card mb-4 border-0 shadow-sm overflow-hidden" style="border-radius:20px; background: white;">
-        <div class="d-flex align-items-center p-3" style="background: #fef2f2;">
-            <div class="rounded-circle d-flex align-items-center justify-content-center" style="width:45px; height:45px; background: #fee2e2; color: #ef4444; font-size:1.2rem; margin-right:12px;">🏦</div>
-            <div>
-                <div class="stat-label" style="margin-bottom:0; color: #991b1b;">Bankalara Toplam Borç</div>
-                <div style="font-weight:800; font-size:1.4rem; color: #dc2626;">{{ total_bank_debt|para }} ₺</div>
+    <div class="row g-2 mb-4">
+        <div class="col-6">
+            <div class="card border-0 shadow-sm overflow-hidden h-100" style="border-radius:18px; background: white;">
+                <div class="p-3" style="background: #fef2f2;">
+                    <div class="stat-label" style="margin-bottom:0; color: #991b1b; font-size:0.65rem;">Banka Borcu</div>
+                    <div style="font-weight:800; font-size:1.2rem; color: #dc2626;">{{ total_bank_debt|para }} ₺</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6">
+            <div class="card border-0 shadow-sm overflow-hidden h-100" style="border-radius:18px; background: white;">
+                <div class="p-3" style="background: #eff6ff;">
+                    <div class="stat-label" style="margin-bottom:0; color: #1e40af; font-size:0.65rem;">Fahri'nin Ödediği</div>
+                    <div style="font-weight:800; font-size:1.2rem; color: #2563eb;">{{ fahri_paid_total|para }} ₺</div>
+                </div>
             </div>
         </div>
     </div>
@@ -485,7 +508,8 @@ def dashboard():
     total_bills_amount=total_bills_amount,
     paid_bills_amount=paid_bills_amount,
     remaining_bills_amount=remaining_bills_amount,
-    total_bank_debt=total_bank_debt)
+    total_bank_debt=total_bank_debt,
+    fahri_paid_total=fahri_paid_total)
 
 
 @app.route('/oto_onayla/<int:bill_id>')
@@ -1409,6 +1433,13 @@ def raporlar():
         cr = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
         metin_debt = (dr['t'] or 0) - (cr['total'] or 0)
 
+    # Seçili periyotta Fahri'nin yaptığı toplam ödeme
+    period_fahri_paid = 0
+    if fahri:
+        f_row = conn.execute("SELECT SUM(amount) as total FROM payments WHERE paid_by_user_id = ? AND payment_date BETWEEN ? AND ?", 
+                            (fahri['id'], s_str, e_str)).fetchone()
+        period_fahri_paid = f_row['total'] or 0
+
     # 2. BÖLÜMLER İÇİN LİSTELER
     sabit_faturalar = conn.execute("""
         SELECT p.*, b.name as bill_name, b.category 
@@ -1453,8 +1484,7 @@ def raporlar():
         msg += f"💰 *Kasa Çıkışı:* {format_para(total_cash_out)} TL\n"
         msg += f"💳 *Banka Borcu:* {format_para(total_bank_debt)} TL\n"
         msg += f"🏠 *Sabit Gider:* {format_para(fixed_bill_total)} TL\n"
-        debt_label = "Metin'in Borcu" if current_user.display_name == 'Fahri' else "Fahri'ye Borcum"
-        msg += f"🤝 *{debt_label}:* {format_para(metin_debt)} TL\n\n"
+        msg += f"🤝 *Fahri'nin Ödediği:* {format_para(period_fahri_paid)} TL\n\n"
         
         msg += "*📁 KATEGORİ ÖZETİ*\n"
         for label, amount in zip(chart_labels, chart_data):
@@ -1540,8 +1570,8 @@ def raporlar():
                     <div style="font-size:1.3rem; font-weight:800; color:var(--primary);">{{ fixed_bill_total|para }} ₺</div>
                 </div>
                 <div class="text-end" style="border-left: 1px solid #e2e8f0; padding-left: 20px;">
-                    <div class="stat-label" style="margin-bottom:0;">{% if current_user.display_name == 'Fahri' %}Metin'in Borcu{% else %}Fahri'ye Borcum{% endif %}</div>
-                    <div style="font-size:1.1rem; font-weight:700; color:var(--danger);">{{ metin_debt|para }} ₺</div>
+                    <div class="stat-label" style="margin-bottom:0;">Fahri'nin Ödediği</div>
+                    <div style="font-size:1.1rem; font-weight:700; color: #2563eb;">{{ period_fahri_paid|para }} ₺</div>
                 </div>
             </div>
         </div>
@@ -1642,7 +1672,7 @@ def raporlar():
         });
     </script>
     {% endblock %}
-    """, period=period, start_date=start_date, end_date=end_date, total_cash_out=total_cash_out, total_bank_debt=total_bank_debt, fixed_bill_total=fixed_bill_total, metin_debt=metin_debt, sabit_faturalar=sabit_faturalar, ekstra_odemeler=ekstra_odemeler, kart_odemeleri=kart_odemeleri, chart_labels=chart_labels, chart_data=chart_data)
+    """, period=period, start_date=start_date, end_date=end_date, total_cash_out=total_cash_out, total_bank_debt=total_bank_debt, fixed_bill_total=fixed_bill_total, metin_debt=metin_debt, period_fahri_paid=period_fahri_paid, sabit_faturalar=sabit_faturalar, ekstra_odemeler=ekstra_odemeler, kart_odemeleri=kart_odemeleri, chart_labels=chart_labels, chart_data=chart_data)
 
 @app.route('/ayarlar', methods=['GET', 'POST'])
 @login_required
