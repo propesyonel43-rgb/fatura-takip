@@ -1,5 +1,4 @@
 import os
-import time
 import requests
 import database
 import threading
@@ -45,18 +44,16 @@ def _send_whatsapp_sync(phone, message, apikey=None):
             return False
 
         # Mesaj gönderildikten sonra kendi tarafimizdan (sadece bizim hesaptan) sil.
-        # Karsi taraf mesaji normal sekilde gorur, sadece bu hesaba baska biri
-        # girdiginde gecmis bildirimleri gormesin diye.
+        # Karsi taraf mesaji normal sekilde gorur. Green API bu silmeyi kendi
+        # tarafinda kuyruga alip biraz gecikmeli (bazen birkac dakika) uyguluyor.
         try:
             id_message = response.json().get("idMessage")
-            print(f"[WhatsApp] Gonderildi, idMessage={id_message}")
             if id_message:
-                # WhatsApp Web'in mesaji islemesi icin kisa bir bekleme
-                time.sleep(2)
                 del_url = f"{api_base}/waInstance{gid}/deleteMessage/{token}"
                 del_resp = requests.post(del_url, json={
                     "chatId": payload["chatId"],
                     "idMessage": id_message,
+                    "onlyForMe": True,
                 }, timeout=15)
                 print(f"[WhatsApp] Silme istegi: {del_resp.status_code} - {del_resp.text}")
         except Exception as e:
