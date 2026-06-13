@@ -257,7 +257,7 @@ app.jinja_env.loader = DictLoader({'base.html': BASE_TEMPLATE})
 
 @app.before_request
 def check_setup():
-    if request.endpoint not in ['setup', 'static'] and not request.endpoint.startswith('__'):
+    if request.endpoint and request.endpoint not in ['setup', 'static'] and not request.endpoint.startswith('__'):
         conn = database.get_db_connection()
         row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
         user_count = list(row.values())[0] if isinstance(row, dict) else row[0]
