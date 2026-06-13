@@ -227,6 +227,13 @@ def send_monthly_summary(year, month):
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
     bekleyen = []
     for b in bills:
+        # Tek seferlik fatura gecmiste odenmisse (hayalet fatura), bu ayin
+        # "bekleyenler" listesinde tekrar gorunmesin
+        if not b['is_recurring']:
+            paid_ever = conn.execute("SELECT id FROM monthly_cycles WHERE bill_id = ? AND status = 'odendi'", (b['id'],)).fetchone()
+            if paid_ever:
+                continue
+
         cycle = conn.execute("SELECT status FROM monthly_cycles WHERE bill_id=? AND year=? AND month=?", (b['id'], year, month)).fetchone()
         if not cycle or cycle['status'] != 'odendi':
             bekleyen.append(f"• {b['name']} ({format_para(b['amount'])} ₺)")

@@ -1455,12 +1455,18 @@ def raporlar():
     if fahri and metin:
         metin_debt = get_metin_debt_total(conn, metin['id'], fahri['id'])
 
-    # Seçili periyotta Fahri'nin yaptığı toplam ödeme
+    # Seçili periyotta Fahri'nin ve Metin'in yaptığı toplam ödeme
     period_fahri_paid = 0
     if fahri:
-        f_row = conn.execute("SELECT SUM(amount) as total FROM payments WHERE paid_by_user_id = ? AND payment_date BETWEEN ? AND ?", 
+        f_row = conn.execute("SELECT SUM(amount) as total FROM payments WHERE paid_by_user_id = ? AND payment_date BETWEEN ? AND ?",
                             (fahri['id'], s_str, e_str)).fetchone()
         period_fahri_paid = f_row['total'] or 0
+
+    period_metin_paid = 0
+    if metin:
+        m_row = conn.execute("SELECT SUM(amount) as total FROM payments WHERE paid_by_user_id = ? AND payment_date BETWEEN ? AND ?",
+                            (metin['id'], s_str, e_str)).fetchone()
+        period_metin_paid = m_row['total'] or 0
 
     # 2. BÖLÜMLER İÇİN LİSTELER
     sabit_faturalar = conn.execute("""
@@ -1506,7 +1512,9 @@ def raporlar():
         msg += f"💰 *Kasa Çıkışı:* {format_para(total_cash_out)} TL\n"
         msg += f"💳 *Banka Borcu:* {format_para(total_bank_debt)} TL\n"
         msg += f"🏠 *Sabit Gider:* {format_para(fixed_bill_total)} TL\n"
-        msg += f"🤝 *Fahri'nin Ödediği:* {format_para(period_fahri_paid)} TL\n\n"
+        msg += f"🤝 *Fahri'nin Ödediği:* {format_para(period_fahri_paid)} TL\n"
+        msg += f"🤝 *Metin'in Ödediği:* {format_para(period_metin_paid)} TL\n"
+        msg += f"📌 *Metin'in Güncel Borcu (Fahri'ye):* {format_para(metin_debt)} TL\n\n"
         
         msg += "*📁 KATEGORİ ÖZETİ*\n"
         for label, amount in zip(chart_labels, chart_data):
@@ -1595,6 +1603,16 @@ def raporlar():
                     <div class="stat-label" style="margin-bottom:0;">Fahri'nin Ödediği</div>
                     <div style="font-size:1.1rem; font-weight:700; color: #2563eb;">{{ period_fahri_paid|para }} ₺</div>
                 </div>
+                <div class="text-end" style="border-left: 1px solid #e2e8f0; padding-left: 20px;">
+                    <div class="stat-label" style="margin-bottom:0;">Metin'in Ödediği</div>
+                    <div style="font-size:1.1rem; font-weight:700; color: #2563eb;">{{ period_metin_paid|para }} ₺</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12">
+            <div class="card p-3 shadow-sm border-0 d-flex flex-row justify-content-between align-items-center" style="background: #fff7ed; border-radius:18px;">
+                <div class="stat-label" style="margin-bottom:0;">📌 Metin'in Fahri'ye Güncel Net Borcu</div>
+                <div style="font-size:1.3rem; font-weight:800; color: var(--danger);">{{ metin_debt|para }} ₺</div>
             </div>
         </div>
     </div>
@@ -1694,7 +1712,7 @@ def raporlar():
         });
     </script>
     {% endblock %}
-    """, period=period, start_date=start_date, end_date=end_date, total_cash_out=total_cash_out, total_bank_debt=total_bank_debt, fixed_bill_total=fixed_bill_total, metin_debt=metin_debt, period_fahri_paid=period_fahri_paid, sabit_faturalar=sabit_faturalar, ekstra_odemeler=ekstra_odemeler, kart_odemeleri=kart_odemeleri, chart_labels=chart_labels, chart_data=chart_data)
+    """, period=period, start_date=start_date, end_date=end_date, total_cash_out=total_cash_out, total_bank_debt=total_bank_debt, fixed_bill_total=fixed_bill_total, metin_debt=metin_debt, period_fahri_paid=period_fahri_paid, period_metin_paid=period_metin_paid, sabit_faturalar=sabit_faturalar, ekstra_odemeler=ekstra_odemeler, kart_odemeleri=kart_odemeleri, chart_labels=chart_labels, chart_data=chart_data)
 
 @app.route('/ayarlar', methods=['GET', 'POST'])
 @login_required

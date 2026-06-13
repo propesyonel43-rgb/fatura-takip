@@ -41,7 +41,24 @@ def _send_whatsapp_sync(phone, message, apikey=None):
         response = requests.post(url, json=payload, timeout=15)
         if response.status_code != 200:
             print(f"WhatsApp API Error: {response.status_code} - {response.text}")
-        return response.status_code == 200
+            return False
+
+        # Mesaj gönderildikten sonra kendi tarafimizdan (sadece bizim hesaptan) sil.
+        # Karsi taraf mesaji normal sekilde gorur, sadece bu hesaba baska biri
+        # girdiginde gecmis bildirimleri gormesin diye.
+        try:
+            id_message = response.json().get("idMessage")
+            if id_message:
+                del_url = f"{api_base}/waInstance{gid}/deleteMessage/{token}"
+                requests.post(del_url, json={
+                    "chatId": payload["chatId"],
+                    "idMessage": id_message,
+                    "onlyForMe": True,
+                }, timeout=15)
+        except Exception as e:
+            print(f"[WhatsApp] Mesaj kendi tarafimizdan silinemedi: {e}")
+
+        return True
     except Exception as e:
         print(f"WhatsApp Error: {e}")
         return False
