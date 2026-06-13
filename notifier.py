@@ -53,7 +53,7 @@ def _send_whatsapp_sync(phone, message, apikey=None):
                 del_resp = requests.post(del_url, json={
                     "chatId": payload["chatId"],
                     "idMessage": id_message,
-                    "onlyForMe": True,
+                    "onlySenderDelete": True,
                 }, timeout=15)
                 print(f"[WhatsApp] Silme istegi: {del_resp.status_code} - {del_resp.text}")
         except Exception as e:
