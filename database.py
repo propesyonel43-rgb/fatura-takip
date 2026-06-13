@@ -378,6 +378,14 @@ def init_db():
         try: conn.rollback()
         except: pass
 
+    # Migration: payments table (card_id) - hangi kartla odendigini net olarak tutmak icin
+    try:
+        conn.execute("ALTER TABLE payments ADD COLUMN card_id INTEGER")
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except: pass
+
     conn.close()
 
 

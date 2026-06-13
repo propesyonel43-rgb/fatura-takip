@@ -68,20 +68,20 @@ def check_bills_and_notify():
         msg = ""
         if bill['is_autopay']:
             if is_overdue:
-                msg = f"🔴 GECİKMİŞ OTO-ÖDEME: {bill['name']}{abone} ({bill['amount']}TL) {days_overdue} gün gecikmede! Hesabı kontrol edin."
+                msg = f"🔴 GECİKMİŞ OTO-ÖDEME: {bill['name']}{abone} ({format_para(bill['amount'])} TL) {days_overdue} gün gecikmede! Hesabı kontrol edin."
             elif is_last_day:
-                msg = f"ℹ️ BUGÜN OTO-ÖDEME SON GÜN: {bill['name']}{abone} ({bill['amount']}TL) hesaptan çekilecek."
+                msg = f"ℹ️ BUGÜN OTO-ÖDEME SON GÜN: {bill['name']}{abone} ({format_para(bill['amount'])} TL) hesaptan çekilecek."
             else:
-                msg = f"ℹ️ YAKLAŞAN OTO-ÖDEME: {bill['name']}{abone} ({bill['amount']}TL) - {days_left} gün kaldı."
+                msg = f"ℹ️ YAKLAŞAN OTO-ÖDEME: {bill['name']}{abone} ({format_para(bill['amount'])} TL) - {days_left} gün kaldı."
         else:
             if is_overdue:
-                msg = f"🔴 DİKKAT GECİKMİŞ ÖDEME: {bill['name']}{abone} faturası ({bill['amount']}TL) tam {days_overdue} gün gecikti! Lütfen hemen ödeyin."
+                msg = f"🔴 DİKKAT GECİKMİŞ ÖDEME: {bill['name']}{abone} faturası ({format_para(bill['amount'])} TL) tam {days_overdue} gün gecikti! Lütfen hemen ödeyin."
             elif is_last_day:
-                msg = f"⚠️ BUGÜN SON GÜN! {bill['name']}{abone} faturası ({bill['amount']}TL) — LÜTFEN BUGÜN ÖDEYİN!"
+                msg = f"⚠️ BUGÜN SON GÜN! {bill['name']}{abone} faturası ({format_para(bill['amount'])} TL) — LÜTFEN BUGÜN ÖDEYİN!"
             elif is_due_day:
-                msg = f"🔔 ÖDEME GÜNÜ: {bill['name']}{abone} faturası ({bill['amount']}TL) ödeme günü geldi."
+                msg = f"🔔 ÖDEME GÜNÜ: {bill['name']}{abone} faturası ({format_para(bill['amount'])} TL) ödeme günü geldi."
             else:
-                msg = f"🔔 {days_left} GÜN KALDI: {bill['name']}{abone} faturası ({bill['amount']}TL)"
+                msg = f"🔔 {days_left} GÜN KALDI: {bill['name']}{abone} faturası ({format_para(bill['amount'])} TL)"
 
         alerts.append(msg)
 
@@ -215,14 +215,14 @@ def send_monthly_summary(year, month):
     
     payments = conn.execute("""
         SELECT p.*, b.name as bill_name, mc.year as b_year, mc.month as b_month
-        FROM payments p 
+        FROM payments p
         JOIN bills b ON p.bill_id = b.id
         LEFT JOIN monthly_cycles mc ON p.id = mc.payment_id
         WHERE p.payment_date >= ? AND p.payment_date <= ?
     """, (start_date, end_date)).fetchall()
-    
+
     total = sum(p['amount'] for p in payments)
-    
+
     # Bekleyenler
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
     bekleyen = []
@@ -231,22 +231,54 @@ def send_monthly_summary(year, month):
         if not cycle or cycle['status'] != 'odendi':
             bekleyen.append(f"• {b['name']} ({format_para(b['amount'])} ₺)")
 
+    # Kim ne ödedi (bu ay)
+    kim_ne_odedi = conn.execute("""
+        SELECT u.display_name, SUM(p.amount) as total
+        FROM payments p
+        JOIN users u ON p.paid_by_user_id = u.id
+        WHERE p.payment_date >= ? AND p.payment_date <= ?
+        GROUP BY u.display_name
+    """, (start_date, end_date)).fetchall()
+
+    # Kart bakiyeleri
+    cards = conn.execute("SELECT * FROM cards WHERE active = 1 ORDER BY owner, name").fetchall()
+
+    # Metin'in Fahri'ye güncel net borcu
+    fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
+    metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
+    metin_debt = 0
+    if fahri and metin:
+        debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
+        metin_debt = debt_row['t'] or 0
+
     msg = f"🏁 *{month_names[month]} {year} AY SONU ÖZETİ*\n"
     msg += "-----------------------------------\n"
-    msg += f"💰 *Toplam Harcanan:* {format_para(total)} ₺\n\n"
-    
+    msg += f"💰 *Toplam Harcanan:* {format_para(total)} ₺\n"
+
+    if kim_ne_odedi:
+        msg += "\n*👤 Kim Ne Ödedi:*\n"
+        for k in kim_ne_odedi:
+            msg += f"• {k['display_name']}: {format_para(k['total'] or 0)} ₺\n"
+
     if payments:
-        msg += "*✅ Ödenenler:*\n"
+        msg += "\n*✅ Ödenenler:*\n"
         for p in payments:
             donem = f"{p['b_month']}/{p['b_year']}" if p.get('b_month') else "Manuel"
             msg += f"• {p['bill_name']} ({donem}): {format_para(p['amount'])} ₺\n"
-    
+
     if bekleyen:
         msg += "\n*⏳ Ödenmeyenler (Kalan):*\n"
-        msg += "\n".join(bekleyen)
+        msg += "\n".join(bekleyen) + "\n"
     else:
-        msg += "\n*✅ Harika! Bu ay tüm faturalar kapatıldı.*"
-        
+        msg += "\n*✅ Harika! Bu ay tüm faturalar kapatıldı.*\n"
+
+    if cards:
+        msg += "\n*💳 Kart Bakiyeleri:*\n"
+        for c in cards:
+            msg += f"• {c['name']} ({c['owner']}): {format_para(c['current_balance'])} ₺\n"
+
+    msg += f"\n*🤝 Metin'in Fahri'ye Net Borcu:* {format_para(metin_debt)} ₺"
+
     notifier.notify_all(msg)
     conn.close()
 

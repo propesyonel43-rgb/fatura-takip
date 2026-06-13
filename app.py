@@ -224,6 +224,34 @@ def format_para(value):
     except:
         return value
 
+def get_metin_debt_total(conn, metin_id, fahri_id):
+    """Metin'in Fahri'ye olan güncel net borcu (sadece odenmemis kalemler)."""
+    row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin_id, fahri_id)).fetchone()
+    return row['t'] or 0
+
+
+def settle_debts_fifo(conn, metin_id, fahri_id, amount):
+    """Tahsilat tutarini en eski borc kalemlerinden baslayarak (FIFO) duser.
+    Bir kalemi tam kapatamazsa o kalemin tutarini kismen azaltir."""
+    remaining = amount
+    debts = conn.execute(
+        "SELECT id, amount FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0 ORDER BY id ASC",
+        (metin_id, fahri_id)
+    ).fetchall()
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    for d in debts:
+        if remaining <= 0:
+            break
+        d = dict(d)
+        if remaining >= d['amount']:
+            conn.execute("UPDATE debts SET is_paid = 1, paid_date = ? WHERE id = ?", (today_str, d['id']))
+            remaining -= d['amount']
+        else:
+            conn.execute("UPDATE debts SET amount = ? WHERE id = ?", (d['amount'] - remaining, d['id']))
+            remaining = 0
+    conn.commit()
+
+
 app.jinja_env.filters['para'] = format_para
 app.jinja_env.loader = DictLoader({'base.html': BASE_TEMPLATE})
 
@@ -335,9 +363,7 @@ def dashboard():
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
     metin_debt = 0
     if fahri and metin:
-        debt_row = conn.execute("SELECT SUM(amount) as total FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-        coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
-        metin_debt = (debt_row['total'] or 0) - (coll_row['total'] or 0)
+        metin_debt = get_metin_debt_total(conn, metin['id'], fahri['id'])
 
     # Banka Borcu Hesaplama (Dashboard için)
     bank_debt_row = conn.execute("SELECT SUM(current_balance) as total FROM cards WHERE active = 1 AND current_balance < 0").fetchone()
@@ -541,9 +567,9 @@ def oto_onayla(bill_id):
     # Ödemeyi kaydet
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO payments (bill_id, amount, payment_date, paid_by_user_id, card_used, note)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (bill_id, bill['amount'], payment_date, current_user.id, card['name'], "Otomatik ödeme onayı"))
+        INSERT INTO payments (bill_id, paid_by_user_id, paid_for_owner, amount, card_used, payment_date, is_on_behalf, notes, card_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (bill_id, current_user.id, "Ortak", bill['amount'], f"{card['name']} ({card['owner']})", payment_date, 1, "Otomatik ödeme onayı", card['id']))
     
     payment_id = cursor.lastrowid
     
@@ -572,7 +598,7 @@ def oto_onayla(bill_id):
     conn.close()
     
     # Bildirim
-    msg = f"✅ {bill['name']} faturası {card['name']} ({card['owner']}) ile otomatik ödendi ve onaylandı. Tutar: {bill['amount']} TL"
+    msg = f"✅ {bill['name']} faturası {card['name']} ({card['owner']}) ile otomatik ödendi ve onaylandı. Tutar: {format_para(bill['amount'])} TL"
     notifier.notify_all(msg)
     
     flash(f"{bill['name']} başarıyla onaylandı.", "success")
@@ -848,12 +874,14 @@ def delete_payment(payment_id):
     payment = conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
     if payment:
         p = dict(payment)
-        dt = datetime.strptime(p['payment_date'], '%Y-%m-%d')
         conn.execute("DELETE FROM debts WHERE payment_id = ?", (payment_id,))
         conn.execute("UPDATE monthly_cycles SET status = 'bekliyor', payment_id = NULL WHERE payment_id = ?", (payment_id,))
+        # Kart bakiyesini geri al (sadece bu odeme bir karta isaretliyse)
+        if p.get('card_id'):
+            conn.execute("UPDATE cards SET current_balance = current_balance + ? WHERE id = ?", (p['amount'], p['card_id']))
         conn.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
         conn.commit()
-        flash("Ödeme silindi ve ilgili borç kayıtları temizlendi.", "success")
+        flash("Ödeme silindi, ilgili borç kaydı ve kart bakiyesi geri alındı.", "success")
     conn.close()
     return redirect(url_for('dashboard'))
 
@@ -974,11 +1002,14 @@ def odeme_kaydet():
         
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO payments (bill_id, paid_by_user_id, paid_for_owner, amount, card_used, payment_date, is_on_behalf, notes)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-        ''', (bill_id, payer['id'], "Ortak", amount, card_used, payment_date, notes))
+            INSERT INTO payments (bill_id, paid_by_user_id, paid_for_owner, amount, card_used, payment_date, is_on_behalf, notes, card_id)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        ''', (bill_id, payer['id'], "Ortak", amount, card_used, payment_date, notes, card['id']))
         payment_id = cursor.lastrowid
-        
+
+        # Kart bakiyesini düş (borcu artır) - oto ödemeyle aynı mantık
+        cursor.execute("UPDATE cards SET current_balance = current_balance - ? WHERE id = ?", (amount, card['id']))
+
         debt_amount = 0
         if card['owner'] == 'Fahri' and metin:
             cursor.execute('''
@@ -1002,13 +1033,11 @@ def odeme_kaydet():
         
         conn.commit()
         
-        msg = f"✅ *{card_used}* ile ödendi: *{bill['name']}* ({bill['category']})\n📅 *Dönem:* {bill_month}/{bill_year}\n💰 *Tutar:* {amount}TL"
+        msg = f"✅ *{card_used}* ile ödendi: *{bill['name']}* ({bill['category']})\n📅 *Dönem:* {bill_month}/{bill_year}\n💰 *Tutar:* {format_para(amount)} TL"
         
         if debt_amount > 0 and metin and fahri:
-            total_debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-            coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
-            total_debt = (total_debt_row['t'] or 0) - (coll_row['total'] or 0)
-            msg += f"\n💸 Metin'e borç yazıldı: +{amount}TL\n🤝 Güncel Toplam Borç: {format_para(total_debt)} TL"
+            total_debt = get_metin_debt_total(conn, metin['id'], fahri['id'])
+            msg += f"\n💸 Metin'e borç yazıldı: +{format_para(amount)}TL\n🤝 Güncel Toplam Borç: {format_para(total_debt)} TL"
             
         notifier.notify_all(msg)
         
@@ -1117,10 +1146,9 @@ def borclar():
         conn.commit()
         
         debt = conn.execute("SELECT amount FROM debts WHERE id = ?", (debt_id,)).fetchone()
-        total_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-        total = total_row['t'] or 0
-        
-        msg = f"✅ Metin {debt['amount']}TL borcunu kapatti. Kalan borc: {total}TL"
+        total = get_metin_debt_total(conn, metin['id'], fahri['id'])
+
+        msg = f"✅ Metin {format_para(debt['amount'])}TL borcunu kapatti. Kalan borc: {format_para(total)}TL"
         notifier.notify_all(msg)
         
         flash("Borç ödendi olarak işaretlendi ve SMS gönderildi.", "success")
@@ -1136,10 +1164,8 @@ def borclar():
         ORDER BY d.id DESC
     ''', (metin['id'], fahri['id'])).fetchall()
     
-    total_debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-    coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
-    total = (total_debt_row['t'] or 0) - (coll_row['total'] or 0)
-    
+    total = get_metin_debt_total(conn, metin['id'], fahri['id'])
+
     conn.close()
     
     return render_template_string("""{% extends 'base.html' %}
@@ -1244,9 +1270,8 @@ def manuel_borc_ekle():
         ''', (0, metin['id'], fahri['id'], amount))
         conn.commit()
         
-        total_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-        total = total_row['t'] or 0
-        
+        total = get_metin_debt_total(conn, metin['id'], fahri['id'])
+
         msg = f"💸 *MANUEL BORÇ KAYDI*\nMetin, Fahri sana bir borç yazdı.\n*Neden:* {reason}\n*Tutar:* {format_para(amount)} TL\n*Toplam Borcun:* {format_para(total)} TL"
         notifier.notify_all(msg)
         flash("Manuel borç eklendi.", "success")
@@ -1266,17 +1291,16 @@ def tahsilat_ekle():
         VALUES (?, ?, ?)
     ''', (amount, datetime.now().strftime('%Y-%m-%d'), note))
     conn.commit()
-    
-    # Yeni borç hesapla
+
+    # Tahsilatı en eski borç kalemlerinden başlayarak (FIFO) borçlara işle
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
     fahri = conn.execute("SELECT id FROM users WHERE display_name = 'Fahri'").fetchone()
-    
+
     total = 0
     if metin and fahri:
-        debt_row = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id = ? AND creditor_user_id = ? AND is_paid = 0", (metin['id'], fahri['id'])).fetchone()
-        coll_row = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
-        total = (debt_row['t'] or 0) - (coll_row['total'] or 0)
-    
+        settle_debts_fifo(conn, metin['id'], fahri['id'], amount)
+        total = get_metin_debt_total(conn, metin['id'], fahri['id'])
+
     msg = f"💰 *TAHSİLAT ALINDI*\nMetin {format_para(amount)} TL ödeme yaptı.\n*Not:* {note if note else '-'}\n📉 *Güncel Kalan Borç:* {format_para(total)} TL"
     notifier.notify_all(msg)
     
@@ -1429,9 +1453,7 @@ def raporlar():
     metin = conn.execute("SELECT id FROM users WHERE display_name = 'Metin'").fetchone()
     metin_debt = 0
     if fahri and metin:
-        dr = conn.execute("SELECT SUM(amount) as t FROM debts WHERE debtor_user_id=? AND creditor_user_id=? AND is_paid=0", (metin['id'], fahri['id'])).fetchone()
-        cr = conn.execute("SELECT SUM(amount) as total FROM debt_collections").fetchone()
-        metin_debt = (dr['t'] or 0) - (cr['total'] or 0)
+        metin_debt = get_metin_debt_total(conn, metin['id'], fahri['id'])
 
     # Seçili periyotta Fahri'nin yaptığı toplam ödeme
     period_fahri_paid = 0
@@ -1980,6 +2002,21 @@ def kart_detay(card_id):
         flash("Kart bilgileri güncellendi.", "success")
         return redirect(url_for('kart_detay', card_id=card_id))
 
+    if request.method == 'POST' and 'set_balance' in request.form:
+        new_balance = float(request.form.get('new_balance') or 0)
+        card_row = conn.execute("SELECT current_balance FROM cards WHERE id = ?", (card_id,)).fetchone()
+        old_balance = dict(card_row)['current_balance'] if card_row else 0
+        delta = new_balance - old_balance
+        conn.execute("UPDATE cards SET current_balance = ? WHERE id = ?", (new_balance, card_id))
+        if delta != 0:
+            conn.execute(
+                "INSERT INTO card_transactions (card_id, amount, transaction_date, note) VALUES (?, ?, ?, ?)",
+                (card_id, delta, datetime.now().strftime('%Y-%m-%d'), "Bakiye Düzeltmesi")
+            )
+        conn.commit()
+        flash("Kart bakiyesi elle güncellendi.", "success")
+        return redirect(url_for('kart_detay', card_id=card_id))
+
     card = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
     if not card:
         conn.close()
@@ -2026,9 +2063,14 @@ def kart_detay(card_id):
         </div>
         {% endif %}
 
-        <button class="btn btn-primary mt-4 py-2 px-4 fw-bold shadow" data-bs-toggle="modal" data-bs-target="#addTransactionModal">
-            💳 İşlem Ekle
-        </button>
+        <div class="d-flex gap-2 justify-content-center mt-4">
+            <button class="btn btn-primary py-2 px-4 fw-bold shadow" data-bs-toggle="modal" data-bs-target="#addTransactionModal">
+                💳 İşlem Ekle
+            </button>
+            <button class="btn btn-outline-light py-2 px-4 fw-bold shadow" data-bs-toggle="modal" data-bs-target="#setBalanceModal">
+                ✏️ Bakiyeyi Düzelt
+            </button>
+        </div>
     </div>
 
     <div class="section-title">İşlem Geçmişi</div>
@@ -2122,6 +2164,30 @@ def kart_detay(card_id):
                 <div class="mb-3">
                     <label class="form-label text-secondary small fw-bold">Not</label>
                     <input type="text" name="note" class="form-control" placeholder="Örn: Market harcaması">
+                </div>
+              </div>
+              <div class="modal-footer border-0 pt-0">
+                <button type="submit" class="btn btn-primary w-100 py-3 fw-bold">Kaydet</button>
+              </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    <!-- Bakiyeyi Düzelt Modal -->
+    <div class="modal fade" id="setBalanceModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <form method="POST">
+              <input type="hidden" name="set_balance" value="1">
+              <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">Bakiyeyi Düzelt</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <p class="small text-muted">Şu anki bakiye: <strong>{{ card.current_balance|para }} ₺</strong>. Aşağıya doğru bakiyeyi yazın, fark otomatik olarak işlem geçmişine "Bakiye Düzeltmesi" olarak eklenecek.</p>
+                <div class="mb-3">
+                    <label class="form-label text-secondary small fw-bold">Yeni Bakiye</label>
+                    <input type="number" step="0.01" name="new_balance" class="form-control form-control-lg" value="{{ card.current_balance }}" required>
                 </div>
               </div>
               <div class="modal-footer border-0 pt-0">
