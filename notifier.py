@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import database
 import threading
@@ -48,13 +49,17 @@ def _send_whatsapp_sync(phone, message, apikey=None):
         # girdiginde gecmis bildirimleri gormesin diye.
         try:
             id_message = response.json().get("idMessage")
+            print(f"[WhatsApp] Gonderildi, idMessage={id_message}")
             if id_message:
+                # WhatsApp Web'in mesaji islemesi icin kisa bir bekleme
+                time.sleep(2)
                 del_url = f"{api_base}/waInstance{gid}/deleteMessage/{token}"
-                requests.post(del_url, json={
+                del_resp = requests.post(del_url, json={
                     "chatId": payload["chatId"],
                     "idMessage": id_message,
                     "onlyForMe": True,
                 }, timeout=15)
+                print(f"[WhatsApp] Silme istegi: {del_resp.status_code} - {del_resp.text}")
         except Exception as e:
             print(f"[WhatsApp] Mesaj kendi tarafimizdan silinemedi: {e}")
 
