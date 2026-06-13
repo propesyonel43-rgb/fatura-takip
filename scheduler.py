@@ -5,20 +5,22 @@ import database
 # Türkiye saati (UTC+3) — harici paket gerekmez
 TURKEY_TZ = timezone(timedelta(hours=3))
 
-NOTIFICATION_SLOTS = [10, 15, 21]  # Saat 10:00, 15:00, 21:00 TR saatiyle
+NOTIFICATION_SLOTS = [10, 21]  # Saat 10:00 ve 21:00 TR saatiyle
 
 
 def check_bills_and_notify():
     now = datetime.now(TURKEY_TZ)
     current_slot = now.hour  # Hangi saatte çağrıldıysa o slot
     
-    # Sadece belirlenen saatlerde (10, 15, 21) çalış.
+    # Sadece belirlenen saatlerde (10, 21) çalış.
     if current_slot not in NOTIFICATION_SLOTS:
         return
         
     today_str = now.strftime('%Y-%m-%d')
     conn = database.get_db_connection()
     bills = conn.execute("SELECT * FROM bills WHERE active = 1").fetchall()
+
+    alerts = []
 
     for b in bills:
         bill = dict(b) if not isinstance(b, dict) else b
@@ -31,6 +33,15 @@ def check_bills_and_notify():
 
         if cycle and (dict(cycle) if not isinstance(cycle, dict) else cycle).get('status') == 'odendi':
             continue
+
+        # Tek seferlik fatura, gecmiste herhangi bir ayda odenmisse bir daha hatirlatma
+        if not bill['is_recurring']:
+            paid_ever = conn.execute(
+                "SELECT id FROM monthly_cycles WHERE bill_id = ? AND status = 'odendi'",
+                (bill['id'],)
+            ).fetchone()
+            if paid_ever:
+                continue
 
         is_last_day = (bill['last_payment_day'] == now.day)
         is_due_day = (bill['due_day'] == now.day)
@@ -54,6 +65,7 @@ def check_bills_and_notify():
 
         # Mesaj oluştur
         abone = f" (Abone: {bill['subscriber_no']})" if bill.get('subscriber_no') else ""
+        msg = ""
         if bill['is_autopay']:
             if is_overdue:
                 msg = f"🔴 GECİKMİŞ OTO-ÖDEME: {bill['name']}{abone} ({bill['amount']}TL) {days_overdue} gün gecikmede! Hesabı kontrol edin."
@@ -71,7 +83,7 @@ def check_bills_and_notify():
             else:
                 msg = f"🔔 {days_left} GÜN KALDI: {bill['name']}{abone} faturası ({bill['amount']}TL)"
 
-        notifier.notify_all(msg)
+        alerts.append(msg)
 
         # Log: Defalarca mesaj gitmesin
         try:
@@ -83,14 +95,20 @@ def check_bills_and_notify():
         except Exception as e:
             print(f"[Bildirim Log Hatası]: {e}")
 
-    conn.close()
-    
     # KARTLARI KONTROL ET
     try:
-        check_cards_and_notify()
+        card_alerts = get_card_notifications(conn, now, today_str)
+        alerts.extend(card_alerts)
     except Exception as e:
         print(f"[Kart Bildirim Hata]: {e}")
         
+    conn.close()
+
+    # Eğer toplu bir mesaj varsa gönder
+    if alerts:
+        final_msg = "🔔 *Faturalar & Kartlar - Güncel Durum*\n\n" + "\n\n".join(alerts)
+        notifier.notify_all(final_msg)
+
     # AY SONU ÖZETİ: Her ayın son günü saat 21:00'de genel rapor atar
     import calendar
     if now.hour == 21 and now.day == calendar.monthrange(now.year, now.month)[1]:
@@ -99,16 +117,13 @@ def check_bills_and_notify():
     print(f"[Cron] {now.strftime('%d.%m.%Y %H:%M')} TR saatiyle kontrol tamamlandı.")
 
 
-def check_cards_and_notify():
-    now = datetime.now(TURKEY_TZ)
+def get_card_notifications(conn, now, today_str):
     current_slot = now.hour
-    
-    # Sadece sabah 10 slotunda kart kontrolü yapalım (günde 1 kez yeterli)
+    # Sadece sabah 10 slotunda kart kontrolü yapalım
     if current_slot != 10:
-        return
+        return []
 
-    today_str = now.strftime('%Y-%m-%d')
-    conn = database.get_db_connection()
+    alerts = []
     cards = conn.execute("SELECT * FROM cards WHERE active = 1").fetchall()
 
     for c in cards:
@@ -116,14 +131,39 @@ def check_cards_and_notify():
         card_id = card['id']
         balance = card['current_balance']
         
+        # Sadece eksi bakiye (borç) varken hatırlat
+        if balance >= 0:
+            continue
+            
+        # Dedup: Bu kart için bugün mesaj listesine eklendi/gitti mi?
+        existing_log = conn.execute(
+            "SELECT id FROM card_notification_log WHERE card_id = ? AND log_date = ?",
+            (card_id, today_str)
+        ).fetchone()
+        
+        if existing_log:
+            continue
+        
         notify_msg = None
         
-        # 1. Son Ödeme Günü Hatırlatması (Kredi Kartı için)
-        if card['type'] == 'Kredi Kartı' and card['due_day'] == now.day:
-            notify_msg = f"💳 Abi *{card['name']}* kartının son ödeme günü gelmiş, bir kontrol et istersen. (Bakiye: {format_para(balance)} TL)"
+        # 1. Son Ödemeye 3 Gün Kala (Her sabah)
+        if card['type'] == 'Kredi Kartı' and card.get('due_day'):
+            days_left = card['due_day'] - now.day
+            # Ay dönümünü basitçe hesapla (örneğin due_day=5, now.day=28 ise days_left negatiftir)
+            # Eğer günler uyuşmuyorsa bir sonraki aya kalmıştır, basitleştirmek adına:
+            if days_left < 0:
+                import calendar
+                last_day = calendar.monthrange(now.year, now.month)[1]
+                days_left = (last_day - now.day) + card['due_day']
+
+            if 0 <= days_left <= 3:
+                if days_left == 0:
+                    notify_msg = f"💳 Abi *{card['name']}* kartının BUGÜN son ödeme günü! (Bakiye: {format_para(balance)} TL)"
+                else:
+                    notify_msg = f"💳 Abi *{card['name']}* kartının son ödemesine {days_left} gün kaldı. (Bakiye: {format_para(balance)} TL)"
         
         # 2. Periyodik Hatırlatma (Eksi bakiye varsa ve 10 gündür mesaj gitmediyse)
-        if not notify_msg and balance < 0:
+        if not notify_msg:
             # En son ne zaman mesaj gitmiş?
             last_log = conn.execute(
                 "SELECT log_date FROM card_notification_log WHERE card_id = ? ORDER BY log_date DESC LIMIT 1",
@@ -140,24 +180,21 @@ def check_cards_and_notify():
                     should_notify_periodic = True
             
             if should_notify_periodic:
-                if card['type'] == 'Kredi Kartı':
-                    notify_msg = f"⚠️ Hatırlatma: *{card['name']}* kredi kartında {format_para(balance)} TL borç görünüyor."
-                else:
-                    notify_msg = f"ℹ️ Hatırlatma: *{card['name']}* eksi hesap bakiyesi: {format_para(balance)} TL."
+                notify_msg = f"⚠️ Hatırlatma: *{card['name']}* kartında {format_para(balance)} TL borç/eksi görünüyor."
 
         if notify_msg:
-            notifier.notify_all(notify_msg)
-            # Logla (Bugün mesaj gitti)
+            alerts.append(notify_msg)
+            # Logla (Bugün mesaj listesine eklendi)
             try:
                 conn.execute(
-                    "INSERT INTO card_notification_log (card_id, log_date) VALUES (?, ?) ON CONFLICT(card_id, log_date) DO NOTHING",
+                    "INSERT INTO card_notification_log (card_id, log_date) VALUES (?, ?)",
                     (card_id, today_str)
                 )
                 conn.commit()
             except Exception as e:
                 print(f"[Kart Log Hatası]: {e}")
 
-    conn.close()
+    return alerts
 
 
 def format_para(value):
@@ -227,4 +264,4 @@ def start_scheduler():
     for h in NOTIFICATION_SLOTS:
         scheduler.add_job(check_bills_and_notify, 'cron', hour=h, minute=0)
     scheduler.start()
-    print("[Scheduler] Dahili zamanlayıcı başlatıldı (10:00, 15:00, 21:00).")
+    print("[Scheduler] Dahili zamanlayıcı başlatıldı (10:00 ve 21:00).")
